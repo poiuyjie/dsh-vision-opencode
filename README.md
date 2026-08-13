@@ -10,7 +10,24 @@ DeepSeek Harness（DSH）插件：给纯文本主模型加一个**可配置的�
 
 > 兼容性：本插件基于 **DSH `0.1.0-rc.6`** 开发并验证。它依赖两个尚未文档化的运行时行为——agent-loop 请求在 `llm/stream` 瀑布中 deep-frozen、cordis waterfall 的 `next()` 重放原始参数。DSH 升级到其他 rc 版本后如果行为变化，请升级本插件或关闭 `autoConvert` 逃生阀（见下文）。
 
-## 安装
+## 一键安装 / 卸载
+
+```bash
+# 安装（幂等，可重复执行；完成后重启 dsh 生效）
+curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.sh | bash -s -- \
+  --vision-provider opencode-go --vision-model mimo-v2.5 \
+  --main-provider opencode-go --main-model deepseek-v4-pro --main-model deepseek-v4-flash \
+  --proxy http://127.0.0.1:7897
+
+# 卸载（dsh 运行时执行可自动还原 modelOverrides；同样幂等）
+curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.sh | bash
+```
+
+- `--proxy` 仅在安装包的网络环境需要时传；不需要代理就省略。
+- `--main-provider` / `--main-model` 是主模型信息，用于自动放行图片提交闸门；不传则需手动配置（见下）。
+- 脚本只改动：profile 的 `package.json` 依赖、`cordis.patch.yml` 注册条目、`settings.yaml` 的 `vision-opencode` 段；全程幂等，卸载时优先调用插件自带的 `/vision-opencode/uninstall` 端点还原 `modelOverrides`，dsh 未运行时降级为警告并给出手动指引。
+
+## 手动安装
 
 ### 方式 A：GitHub 直接安装
 
