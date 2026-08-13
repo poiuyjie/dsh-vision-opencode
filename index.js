@@ -186,22 +186,33 @@ export function apply(ctx, entry) {
    */
   async function removeGateOverrides() {
     const cfg = options();
-    if (settingsService === void 0 || cfg.mainProvider.length === 0 || cfg.mainModels.length === 0) return 0;
+    if (settingsService === void 0) return 0;
+    // 候选主模型 id：当前配置 ∪ 硬编码黑名单。配置可能在写入后被改空
+    // （例如 settings 段被外部清掉、或端点自清理时先清空了配置），
+    // 此时仍要按黑名单把历史上写入的「纯文本模型谎称支持图片」条目删掉。
+    const candidates = new Set(cfg.mainModels);
+    for (const id of SYNTHETIC_IMAGE_MODELS) candidates.add(id);
+    if (candidates.size === 0) return 0;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const descriptor = settingsService.describe().find((entry) => entry.ns === 'llm-pi-ai');
         if (descriptor === void 0 || descriptor.user === void 0 || descriptor.user === null || typeof descriptor.user !== 'object') return 0;
         const next = structuredClone(descriptor.user);
-        const provider = next.providers?.[cfg.mainProvider];
         let removed = 0;
-        if (provider !== void 0 && provider !== null && typeof provider === 'object') {
-          for (const id of cfg.mainModels) {
-            if (provider.modelOverrides !== void 0 && provider.modelOverrides[id] !== void 0) {
-              delete provider.modelOverrides[id];
-              removed += 1;
+        if (next.providers !== void 0 && next.providers !== null && typeof next.providers === 'object') {
+          for (const [providerName, provider] of Object.entries(next.providers)) {
+            // 配置里指定了供应商时只清理该供应商（本插件只会写那里）；
+            // 配置为空时全供应商扫描（历史写入的供应商可能已不可考）。
+            if (cfg.mainProvider.length > 0 && providerName !== cfg.mainProvider) continue;
+            if (provider === void 0 || provider === null || typeof provider !== 'object') continue;
+            for (const id of candidates) {
+              if (provider.modelOverrides !== void 0 && provider.modelOverrides[id] !== void 0) {
+                delete provider.modelOverrides[id];
+                removed += 1;
+              }
             }
+            if (provider.modelOverrides !== void 0 && Object.keys(provider.modelOverrides).length === 0) delete provider.modelOverrides;
           }
-          if (provider.modelOverrides !== void 0 && Object.keys(provider.modelOverrides).length === 0) delete provider.modelOverrides;
         }
         if (removed === 0) return 0;
         await settingsService.replace('llm-pi-ai', next, descriptor.revision);
@@ -536,12 +547,15 @@ export function apply(ctx, entry) {
           }
           // 卸载前自清理：清空本插件自己的 settings 用户层，
           // 并移除本插件写入的 llm-pi-ai modelOverrides（含 revision 防冲突）。
+          // 必须先移除 modelOverrides 再清空本插件 settings：
+          // removeGateOverrides 依赖当前配置（mainProvider/mainModels）
+          // 定位条目，清空之后配置就只剩默认值了。
+          const overridesRemoved = await removeGateOverrides();
           let ownCleared = false;
           if (settingsScope !== void 0) {
             await settingsScope.replace({});
             ownCleared = true;
           }
-          const overridesRemoved = await removeGateOverrides();
           json(res, 200, {
             ok: true,
             ownSettingsCleared: ownCleared,

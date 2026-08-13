@@ -63,6 +63,7 @@ if curl -fsS --max-time 3 "$ENDPOINT/config" >/dev/null 2>&1; then
   if RESULT=$(curl -fsS --max-time 30 -X POST "$ENDPOINT/uninstall" 2>/dev/null); then
     echo "$RESULT"
     CLEANED_BY_ENDPOINT=1
+    GATE_REMOVED=$(printf '%s' "$RESULT" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{try{const n=JSON.parse(s).gateOverridesRemoved;process.stdout.write(typeof n==="number"?String(n):"")}catch{}})')
   else
     echo "⚠ 自清理端点调用失败（插件可能还是旧版本，没有 /uninstall 端点）；继续本地清理，但 llm-pi-ai.modelOverrides 需要手动处理（见末尾提示）"
   fi
@@ -85,7 +86,12 @@ const lines = fs.readFileSync(file, 'utf8').split('\n');
 const out = [];
 let skip = false;
 for (const line of lines) {
-  if (!skip && /^vision-opencode:\s*$/.test(line)) { skip = true; continue; }
+  if (!skip && /^vision-opencode:/.test(line)) {
+    // 块形式（vision-opencode: + 缩进行）或内联形式（如 vision-opencode: {}）都删：
+    // 块形式后续缩进行一并跳过；内联形式只删本行。
+    skip = line.slice('vision-opencode:'.length).trim() === '';
+    continue;
+  }
   if (skip) {
     if (/^\s/.test(line) || line.trim() === '') continue; // 段内（缩进）或空行：跳过
     skip = false; // 下一个顶层 token：段结束
@@ -137,6 +143,11 @@ while (i < lines.length) {
 }
 let text = out.join('\n').replace(/\n{3,}$/g, '\n\n');
 if (text.endsWith('\n\n')) text = text.slice(0, -1);
+// 条目清空后若只剩注释/空行，YAML 会解析成 null 而不是数组，
+// dsh 启动会直接报错——补一个空数组，保证文件始终合法。
+if (!out.some((line) => line.trim() !== '' && !line.trim().startsWith('#'))) {
+  text = text.trimEnd() === '' ? '[]' : `${text.trimEnd()}\n\n[]`;
+}
 fs.writeFileSync(file, text);
 console.log(`→ 已移除 cordis.patch.yml 的 vision-opencode 条目（${file}）`);
 NODE
@@ -156,10 +167,20 @@ if [ -f "$PROFILE_DIR/package.json" ]; then
 fi
 
 # ---- 5. 完成 ----
+if [ "$CLEANED_BY_ENDPOINT" = "1" ]; then
+  if [ -z "${GATE_REMOVED:-}" ] || [ "$GATE_REMOVED" = "0" ]; then
+    FINAL_NOTE="   插件端点已自清理（移除 ${GATE_REMOVED:-0} 条 modelOverrides）。若 settings.yaml 里 llm-pi-ai.*.modelOverrides 仍有残留，请手动删除后再重启。"
+  else
+    FINAL_NOTE="   已由插件端点自清理 modelOverrides（移除 $GATE_REMOVED 条）。"
+  fi
+else
+  FINAL_NOTE="   注意：确认 settings.yaml 里没有残留的 llm-pi-ai modelOverrides（见上方提示）。"
+fi
+
 cat <<EOF
 
 ✅ 卸载完成。剩余一步：
    重启 dsh（Ctrl+C 后重新运行 dsh）。
 
-$( [ "$CLEANED_BY_ENDPOINT" = "1" ] && echo "   已由插件自清理 modelOverrides。" || echo "   注意：确认 settings.yaml 里没有残留的 llm-pi-ai modelOverrides（见上方提示）。" )
+$FINAL_NOTE
 EOF

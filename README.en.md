@@ -107,10 +107,12 @@ curl -X POST http://127.0.0.1:3080/vision-opencode/uninstall
 # 3. Remove the dependency and registration entry
 cd ~/.dsh/profiles/web
 pnpm remove dsh-vision-opencode
-#    Edit cordis.patch.yml and remove the vision-opencode insert entry
+#    Edit cordis.patch.yml and remove the vision-opencode insert entry (if only comments remain, replace the file with [])
 
 # 4. Restart dsh
 ```
+
+> After step 1, `settings.yaml` may keep a single leftover line `vision-opencode: {}` (the placeholder of cleared plugin settings) — harmless; you can delete it in step 3. The one-click uninstall script removes it for you.
 
 **If you skip step 1**: leftover `modelOverrides` in settings will make the text-only main model "claim" to support images, and later image messages will hit the real API and error out. Either manually remove this plugin's entries under `llm-pi-ai.providers.<provider>.modelOverrides` in `settings.yaml`, or run `curl -X POST .../vision-opencode/uninstall` and restart.
 

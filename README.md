@@ -107,10 +107,12 @@ curl -X POST http://127.0.0.1:3080/vision-opencode/uninstall
 # 3. 删除依赖与注册条目
 cd ~/.dsh/profiles/web
 pnpm remove dsh-vision-opencode
-#    编辑 cordis.patch.yml，删除 vision-opencode 的 insert 条目
+#    编辑 cordis.patch.yml，删除 vision-opencode 的 insert 条目（若删完后文件只剩注释，把内容替换成 []）
 
 # 4. 重启 dsh
 ```
+
+> 第 1 步执行后 `settings.yaml` 可能残留一行 `vision-opencode: {}`（插件 settings 清空后的占位），无害；第 3 步可顺手删除。用一键卸载脚本则无需关心，脚本会一并清掉。
 
 **如果跳过第 1 步**：settings 里残留的 `modelOverrides` 会让纯文本主模型"谎称"支持图片，之后发送图片会直接打到真实 API 报错。请手动删除 `settings.yaml` 中 `llm-pi-ai.providers.<provider>.modelOverrides` 的本插件条目，或执行 `curl -X POST .../vision-opencode/uninstall` 后再重启。
 

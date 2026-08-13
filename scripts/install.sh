@@ -112,6 +112,15 @@ if (/^vision-opencode:\s*$/m.test(text)) {
   console.log('→ settings.yaml 的 vision-opencode 段已存在，跳过');
   process.exit(0);
 }
+// 卸载端点自清理后可能残留内联空对象（vision-opencode: {}）；
+// 原位替换成完整配置段，避免追加后出现重复键。
+const emptyInline = text.match(/^vision-opencode:\s*\{\s*\}\s*\n?/m);
+if (emptyInline !== null) {
+  text = text.replace(emptyInline[0], block + '\n');
+  fs.writeFileSync(file, text);
+  console.log('→ 已将 settings.yaml 的 vision-opencode: {} 替换为完整配置段');
+  process.exit(0);
+}
 if (text.length > 0 && !text.endsWith('\n')) text += '\n';
 text += block + '\n';
 fs.writeFileSync(file, text);
