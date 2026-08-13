@@ -73,7 +73,7 @@ window.__ModuleLoader__.load({
 				return function() { cancelled = true; };
 			}, [sessionId]);
 
-			var currentValue = current !== null && typeof current.provider === "string" ? current.provider + "/" + current.model : "";
+			var currentValue = current !== null && typeof current.provider === "string" && current.provider.length > 0 ? current.provider + "/" + current.model : "";
 
 			var onChange = function(event) {
 				var value = event.target.value;

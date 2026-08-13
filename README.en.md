@@ -36,8 +36,10 @@ git clone https://github.com/poiuyjie/dsh-vision-opencode
 
 ```bash
 # Install (idempotent, safe to re-run; restart dsh afterwards)
+# No vision model is preset: without --vision-*, pick one after install from the
+# "识图模型" dropdown next to the input box (it lists image-capable models across
+# all your providers; --vision-* is optional, to pin a specific vision model)
 curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.sh | bash -s -- \
-  --vision-provider opencode-go --vision-model mimo-v2.5 \
   --main-provider opencode-go --main-model deepseek-v4-pro --main-model deepseek-v4-flash \
   --proxy http://127.0.0.1:7897
 
@@ -45,6 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/s
 curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.sh | bash
 ```
 
+- `--vision-provider` / `--vision-model` are optional: pass them only to pin a specific vision model; otherwise pick one after install from the "识图模型" dropdown next to the input box (auto-lists image-capable models across all your providers).
 - Only pass `--proxy` if your network needs it to reach GitHub/npm.
 - `--main-provider` / `--main-model` describe your text main model and are used to auto-whitelist the image-submission gate; omit them and configure manually instead (see below).
 - The scripts only touch: the profile's `package.json` dependency, the `cordis.patch.yml` registration entry, and the `vision-opencode` section in `settings.yaml`. Fully idempotent. Uninstall prefers calling the plugin's own `/vision-opencode/uninstall` endpoint to restore `modelOverrides`; if dsh isn't running it degrades to a warning plus manual instructions.
@@ -87,8 +90,8 @@ Edit `~/.dsh/settings.yaml`:
 
 ```yaml
 vision-opencode:
-  provider: opencode-go      # provider route for the vision model
-  model: mimo-v2.5          # vision model id (must really accept images)
+  provider: ''              # provider route for the vision model; empty = not chosen (selector shows 「识图模型」)
+  model: ''                 # vision model id; empty = not chosen (written back once you pick from the dropdown)
   autoConvert: true         # auto-convert toggle (stability escape hatch; set false if problems)
   mainProvider: opencode-go # provider route for the main model (under the pi-ai adapter)
   mainModels:               # text-only main model ids (auto-whitelist the image gate)
@@ -96,7 +99,7 @@ vision-opencode:
     - deepseek-v4-flash
 ```
 
-Restart `dsh`. A "vision model" dropdown appears next to the input box; the first selection is written back into settings.
+Restart `dsh`. A "vision model" dropdown appears next to the input box — it auto-lists every image-capable model across your providers; it shows a 「识图模型」 placeholder until you pick one, and your pick is written back into settings.
 
 > `mainProvider`/`mainModels` may be left empty: the plugin then changes no config, but sending images to a text-only main model will be rejected by DSH's built-in submission gate (DSH's default safety behavior). Manually declare `input: [text, image]` for the main model under `llm-pi-ai.providers.<provider>.modelOverrides` instead.
 

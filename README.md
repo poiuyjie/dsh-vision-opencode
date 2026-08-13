@@ -36,8 +36,9 @@ git clone https://github.com/poiuyjie/dsh-vision-opencode
 
 ```bash
 # 安装（幂等，可重复执行；完成后重启 dsh 生效）
+# 识图模型不预设默认：不传 --vision-*，装好后在输入框右侧「识图模型」下拉里选
+#（下拉自动列出你所有供应商中支持图片输入的模型；--vision-* 可选，用于固定识图模型）
 curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.sh | bash -s -- \
-  --vision-provider opencode-go --vision-model mimo-v2.5 \
   --main-provider opencode-go --main-model deepseek-v4-pro --main-model deepseek-v4-flash \
   --proxy http://127.0.0.1:7897
 
@@ -45,6 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/s
 curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.sh | bash
 ```
 
+- `--vision-provider` / `--vision-model` 可选：想固定识图模型才传；不传则装好后在输入框右侧「识图模型」下拉里选择（自动列出你所有供应商中支持图片输入的模型）。
 - `--proxy` 仅在安装包的网络环境需要时传；不需要代理就省略。
 - `--main-provider` / `--main-model` 是主模型信息，用于自动放行图片提交闸门；不传则需手动配置（见下）。
 - 脚本只改动：profile 的 `package.json` 依赖、`cordis.patch.yml` 注册条目、`settings.yaml` 的 `vision-opencode` 段；全程幂等，卸载时优先调用插件自带的 `/vision-opencode/uninstall` 端点还原 `modelOverrides`，dsh 未运行时降级为警告并给出手动指引。
@@ -87,8 +89,8 @@ pnpm add -w dsh-vision-opencode   # 目前不可用，请先用方式 A；-w 同
 
 ```yaml
 vision-opencode:
-  provider: opencode-go      # 识图模型所在供应商路由
-  model: mimo-v2.5          # 识图模型 id（须真正支持图片输入）
+  provider: ''              # 识图模型所在供应商路由；留空 = 未选择（选择器显示「识图模型」）
+  model: ''                 # 识图模型 id；留空 = 未选择（在下拉里选中后自动写入）
   autoConvert: true         # 发图自动转换开关（稳定性逃生阀，出问题改 false）
   mainProvider: opencode-go # 主模型所在供应商路由（pi-ai 适配器名下）
   mainModels:               # 纯文本主模型 id 列表（自动放行图片提交闸门）
@@ -96,7 +98,7 @@ vision-opencode:
     - deepseek-v4-flash
 ```
 
-重启 `dsh`。重启后输入框右侧会出现「识图模型」下拉；首次选择会写入 settings。
+重启 `dsh`。重启后输入框右侧会出现「识图模型」下拉——它自动列出你所有供应商中声明了图片输入的模型；未选择时显示「识图模型」占位，选中即写入 settings。
 
 > `mainProvider`/`mainModels` 可留空：此时插件不会自动改任何配置，但向纯文本主模型发送图片会被 DSH 内置的提交闸门拒绝（这是 DSH 的默认安全行为），需要你手动在 `llm-pi-ai.providers.<provider>.modelOverrides` 里给主模型声明 `input: [text, image]`。
 

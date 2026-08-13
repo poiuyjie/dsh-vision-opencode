@@ -50,6 +50,7 @@ echo "== 1. install（全新）=="
 PATH="$TMP/bin:$PATH" DSH_HOME="$TMP" bash "$HERE/install.sh" --profile-dir "$PROFILE" >/dev/null
 grep -q 'id: vision-opencode' "$PROFILE/cordis.patch.yml" && ok "cordis 条目已写入" || bad "cordis 条目缺失"
 grep -q '^vision-opencode:' "$SETTINGS" && ok "settings 段已写入" || bad "settings 段缺失"
+! grep -q 'mimo-v2.5' "$SETTINGS" && ok "默认不写入硬编码识图模型" || bad "默认写入了硬编码识图模型"
 grep -q '"dsh-vision-opencode"' "$PROFILE/package.json" && ok "依赖已写入" || bad "依赖缺失"
 
 echo "== 2. install 幂等 =="
@@ -102,6 +103,12 @@ echo "== 9. 坏文件（[] + 条目共存）能被 install 自愈 =="
 printf '# 注释\n\n[]\n\n- insert:\n    - id: vision-opencode\n      name: '"'"'dsh-vision-opencode'"'"'\n' > "$PROFILE/cordis.patch.yml"
 PATH="$TMP/bin:$PATH" DSH_HOME="$TMP" bash "$HERE/install.sh" --profile-dir "$PROFILE" >/dev/null
 ! grep -Eq '^\s*\[\s*\]\s*$' "$PROFILE/cordis.patch.yml" && grep -q 'id: vision-opencode' "$PROFILE/cordis.patch.yml" && ok "坏文件已自愈（占位删除、条目保留）" || bad "坏文件未自愈"
+
+echo "== 10. 显式指定识图模型时写入对应配置（可选参数）=="
+FRESH="$TMP/fresh"; mkdir -p "$FRESH/profile"
+printf '{ "name": "dsh-profile-web", "private": true, "dependencies": {} }\n' > "$FRESH/profile/package.json"
+PATH="$TMP/bin:$PATH" DSH_HOME="$FRESH" bash "$HERE/install.sh" --profile-dir "$FRESH/profile" --vision-provider acme --vision-model eagle-eye >/dev/null
+grep -q 'provider: acme' "$FRESH/settings.yaml" && grep -q 'model: eagle-eye' "$FRESH/settings.yaml" && ok "指定识图模型已写入" || bad "指定识图模型未写入"
 
 echo
 echo "结果: $PASS 通过, $FAIL 失败"

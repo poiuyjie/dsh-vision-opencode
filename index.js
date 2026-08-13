@@ -31,9 +31,11 @@ const IMAGE_EXTENSIONS = {
   '.gif': 'image/gif',
 };
 
-/** 默认识图模型：opencode Go 套餐的 MiMo V2.5。 */
-const DEFAULT_PROVIDER = 'opencode-go';
-const DEFAULT_MODEL = 'mimo-v2.5';
+/**
+ * 识图模型不预设默认值：不同用户的供应商/套餐各不相同，硬编码默认
+ * 会把别人没有的模型写进配置。未配置时选择器显示「识图模型」占位，
+ * 由用户从自己供应商中声明了图片输入的模型里选择。
+ */
 
 /**
  * 伪识图模型黑名单：settings.yaml 里 llm-pi-ai.providers.opencode-go.modelOverrides
@@ -50,8 +52,8 @@ const NS = settingsNamespace('vision-opencode');
 
 /** 识图模型配置 schema（settings 面板自动生成表单）。 */
 const Config = z.object({
-  provider: z.string().default(DEFAULT_PROVIDER),
-  model: z.string().default(DEFAULT_MODEL),
+  provider: z.string().default(''),
+  model: z.string().default(''),
   /** llm/stream 瀑布开关：false 时停用「发图自动转换」，只保留工具与选择器（稳定性逃生阀）。 */
   autoConvert: z.boolean().default(true),
   /** 主模型所在供应商路由（pi-ai 适配器名下）。空 = 不自动管理图片提交闸门。 */
@@ -104,8 +106,8 @@ export function apply(ctx, entry) {
     const raw = current();
     if (raw === lastRaw && lastGood !== void 0) return lastGood;
     const next = {
-      provider: typeof raw?.provider === 'string' && raw.provider.length > 0 ? raw.provider : DEFAULT_PROVIDER,
-      model: typeof raw?.model === 'string' && raw.model.length > 0 ? raw.model : DEFAULT_MODEL,
+      provider: typeof raw?.provider === 'string' ? raw.provider.trim() : '',
+      model: typeof raw?.model === 'string' ? raw.model.trim() : '',
       autoConvert: raw?.autoConvert !== false,
       mainProvider: typeof raw?.mainProvider === 'string' ? raw.mainProvider.trim() : '',
       mainModels: Array.isArray(raw?.mainModels)
@@ -116,6 +118,9 @@ export function apply(ctx, entry) {
     lastGood = next;
     return next;
   };
+  /** 是否已配置可用的识图模型（任一为空即视为未配置）。 */
+  const hasVisionModel = (route) => typeof route?.provider === 'string' && route.provider.length > 0
+    && typeof route?.model === 'string' && route.model.length > 0;
   let settingsScope;
   let settingsService;
   ctx.inject(['settings'], (sctx) => {
@@ -139,6 +144,9 @@ export function apply(ctx, entry) {
       order: 112,
       text: () => {
         const route = options();
+        if (!hasVisionModel(route)) {
+          return 'No vision model has been configured yet. The vision_read_image tool exists but will fail with a "not configured" error until the user picks a vision model from the 「识图模型」 selector next to the input box (it lists every image-capable model across the user\'s providers). If image understanding is needed, ask the user to select one there first.';
+        }
         return `A dedicated vision model (${route.provider}/${route.model}) is available through the vision_read_image tool. Use it proactively whenever image content must be understood: the user references an image file in the workspace, a tool result points at an image path, or you need OCR, chart reading, or scene description. Images the user attaches in chat are already analyzed automatically before reaching you — do not re-describe them. If the tool reports the vision model unavailable, say so to the user and continue the task without the image.`;
       },
     });
@@ -403,6 +411,20 @@ export function apply(ctx, entry) {
     const messages = Array.isArray(llmOptions.messages) ? llmOptions.messages : [];
     const hasImage = messages.some((message) => contentHasImage(message.content ?? []));
     if (!hasImage || isVisionRoute) return next();
+    if (!hasVisionModel(route)) {
+      // 未配置识图模型：不能替用户假定任何模型。图片降级为指引文本，
+      // 主模型照常完成回合并提示用户先去选择器里选一个识图模型。
+      return (async function* unconfiguredStream() {
+        const converted = messages.map((message) => freezeMessage({
+          ...message,
+          content: [
+            ...(message.content ?? []).filter((block) => block.type !== 'image'),
+            { type: 'text', text: '[识图模型未配置] 用户发送的图片未能自动分析：请先点击输入框右侧的「识图模型」下拉，从自己供应商中支持图片输入的模型里选择一个，然后重发图片。' },
+          ],
+        }));
+        yield* ctx.llm.stream({ ...llmOptions, messages: converted, [BYPASS]: true });
+      })();
+    }
     // 不能就地改 llmOptions.messages：agent-loop 拼出的请求是 deep-frozen 的
     // （冻结正是为了强制"监听器只读不写"，直接赋值会抛
     //  "Cannot assign to read only property 'messages'"）。
@@ -484,7 +506,8 @@ export function apply(ctx, entry) {
               return;
             }
             if (settingsScope !== void 0) {
-              await settingsScope.replace({ provider, model });
+              // 只更新识图模型，保留其余配置（autoConvert/mainProvider/mainModels）。
+              await settingsScope.replace({ ...options(), provider, model });
             } else {
               current = () => ({ provider, model });
             }
@@ -578,7 +601,7 @@ export function apply(ctx, entry) {
   // ---- 工具：vision_read_image ----
   ctx.tools.register(defineTool({
     name: 'vision_read_image',
-    description: `Use the configured vision model (default ${DEFAULT_PROVIDER}/${DEFAULT_MODEL}) to read and analyze an image file (PNG/JPEG/WebP/GIF) and return a detailed text description: OCR transcription, layout, chart values, scene. Use this tool whenever image content must be understood — including when the current main model does not support image input.`,
+    description: `Use the configured vision model (selected via the 「识图模型」 dropdown next to the input box, which lists image-capable models across all providers) to read and analyze an image file (PNG/JPEG/WebP/GIF) and return a detailed text description: OCR transcription, layout, chart values, scene. Use this tool whenever image content must be understood — including when the current main model does not support image input. If no vision model is configured yet, this tool fails with guidance.`,
     parameters: {
       file_path: {
         type: 'string',
@@ -661,6 +684,9 @@ export function apply(ctx, entry) {
       }
       const question = (args.question ?? '').trim();
       const route = options();
+      if (!hasVisionModel(route)) {
+        throw new Error('未配置识图模型：请在输入框右侧的「识图模型」下拉中选择一个支持图片输入的模型，然后再试。');
+      }
       let analysis;
       try {
         // 与瀑布路径共用同一个带超时+重试的识图子调用；

@@ -8,8 +8,8 @@
 #
 # 选项：
 #   --profile-dir <路径>        dsh profile 目录（默认 $DSH_HOME/profiles/web，DSH_HOME 默认 ~/.dsh）
-#   --vision-provider <名称>    识图模型供应商路由（默认 opencode-go）
-#   --vision-model <id>         识图模型 id（默认 mimo-v2.5）
+#   --vision-provider <名称>    识图模型供应商路由（可选；不传则安装后在界面下拉选择）
+#   --vision-model <id>         识图模型 id（可选；与 --vision-provider 成对使用）
 #   --main-provider <名称>      主模型供应商路由（写入 mainProvider，自动放行图片提交闸门）
 #   --main-model <id>           纯文本主模型 id（可重复；写入 mainModels）
 #   --no-auto-convert           关闭「发图自动转换」瀑布（只保留工具 + 选择器）
@@ -23,8 +23,10 @@ REPO_SPEC="github:poiuyjie/dsh-vision-opencode"
 DSH_ROOT="${DSH_HOME:-$HOME/.dsh}"
 PROFILE_DIR="${DSH_ROOT}/profiles/web"
 SETTINGS_FILE="${DSH_ROOT}/settings.yaml"
-VISION_PROVIDER="opencode-go"
-VISION_MODEL="mimo-v2.5"
+# 识图模型不预设默认：用户供应商/套餐各不相同，硬编码会把别人没有的模型写进去。
+# 不传则选择器显示「识图模型」，由用户从自己供应商里支持图片输入的模型中选择。
+VISION_PROVIDER=""
+VISION_MODEL=""
 MAIN_PROVIDER=""
 MAIN_MODELS=()
 AUTO_CONVERT="true"
@@ -99,9 +101,13 @@ else
 fi
 
 # ---- 3. 写 settings.yaml 的 vision-opencode 段（幂等：已存在则跳过）----
-SETTINGS_BLOCK="vision-opencode:
+SETTINGS_BLOCK="vision-opencode:"
+if [ -n "$VISION_PROVIDER" ] && [ -n "$VISION_MODEL" ]; then
+  SETTINGS_BLOCK="$SETTINGS_BLOCK
   provider: $VISION_PROVIDER
-  model: $VISION_MODEL
+  model: $VISION_MODEL"
+fi
+SETTINGS_BLOCK="$SETTINGS_BLOCK
   autoConvert: $AUTO_CONVERT"
 if [ -n "$MAIN_PROVIDER" ]; then
   SETTINGS_BLOCK="$SETTINGS_BLOCK
@@ -146,7 +152,8 @@ cat <<EOF
 
 ✅ 安装完成。剩余一步：
    重启 dsh（在运行 dsh 的终端 Ctrl+C，再重新运行 dsh）
-   重启后输入框右侧出现「识图模型」下拉，配置即全部生效。
+   重启后输入框右侧出现「识图模型」下拉：如未指定识图模型，
+   请在下拉里选择一个（自动列出你所有供应商中支持图片输入的模型）。
 
    回退/卸载：scripts/uninstall.sh（本仓库）
 EOF
