@@ -16,7 +16,7 @@ DeepSeek Harness（DSH）插件：给纯文本主模型加一个**可配置的�
 
 ```bash
 cd ~/.dsh/profiles/web
-pnpm add github:<你的用户名>/dsh-vision-opencode
+pnpm add github:poiuyjie/dsh-vision-opencode
 ```
 
 ### 方式 B：npm 安装（发布后）
