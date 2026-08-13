@@ -55,7 +55,9 @@ curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/s
 
 ```bash
 cd ~/.dsh/profiles/web
-pnpm add github:poiuyjie/dsh-vision-opencode
+pnpm add -w github:poiuyjie/dsh-vision-opencode
+# Newer DSH profile dirs are pnpm workspace roots (they contain pnpm-workspace.yaml),
+# so -w is required; drop -w on older DSH without that file.
 ```
 
 ### Option B: Install from npm
@@ -64,7 +66,7 @@ pnpm add github:poiuyjie/dsh-vision-opencode
 
 ```bash
 cd ~/.dsh/profiles/web
-pnpm add dsh-vision-opencode   # not available yet — use Option A for now
+pnpm add -w dsh-vision-opencode   # not available yet — use Option A for now; -w as above
 ```
 
 ## Register in cordis

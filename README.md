@@ -55,7 +55,9 @@ curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/s
 
 ```bash
 cd ~/.dsh/profiles/web
-pnpm add github:poiuyjie/dsh-vision-opencode
+pnpm add -w github:poiuyjie/dsh-vision-opencode
+# 新版 DSH 的 profile 目录是 pnpm 工作区根（有 pnpm-workspace.yaml），必须加 -w；
+# 老版本没有该文件的话去掉 -w 即可。
 ```
 
 ### 方式 B：npm 安装
@@ -64,7 +66,7 @@ pnpm add github:poiuyjie/dsh-vision-opencode
 
 ```bash
 cd ~/.dsh/profiles/web
-pnpm add dsh-vision-opencode   # 目前不可用，请先用方式 A
+pnpm add -w dsh-vision-opencode   # 目前不可用，请先用方式 A；-w 同上
 ```
 
 ## 注册进 cordis

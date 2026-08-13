@@ -69,8 +69,15 @@ cd "$PROFILE_DIR"
 if grep -q '"dsh-vision-opencode"' package.json; then
   info "依赖已存在，跳过 pnpm add"
 else
-  info "安装依赖: pnpm add $REPO_SPEC"
-  pnpm add "$REPO_SPEC"
+  # DSH 新版 profile 目录自带 pnpm-workspace.yaml（packages: [.]），是 pnpm 工作区根：
+  # 直接 pnpm add 会报 ERR_PNPM_ADDING_TO_ROOT，必须 -w 显式装到根。
+  if [ -f pnpm-workspace.yaml ]; then
+    info "安装依赖: pnpm add -w $REPO_SPEC"
+    pnpm add -w "$REPO_SPEC"
+  else
+    info "安装依赖: pnpm add $REPO_SPEC"
+    pnpm add "$REPO_SPEC"
+  fi
 fi
 
 # ---- 2. 注册 cordis.patch.yml 条目（幂等：已有 id: vision-opencode 则跳过）----

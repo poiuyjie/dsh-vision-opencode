@@ -14,10 +14,11 @@ PROFILE="$TMP/profile"
 SETTINGS="$TMP/settings.yaml"
 mkdir -p "$PROFILE"
 
-# fake pnpm：add 往 package.json 追加一行，remove 删除该行
+# fake pnpm：add 往 package.json 追加一行，remove 删除该行；工作区根场景接受 -w
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/pnpm" <<'EOF'
 #!/usr/bin/env bash
+if [ "$1" = "-w" ]; then shift; fi
 if [ "$1" = "add" ]; then printf '  "dsh-vision-opencode": "%s",\n' "$2" >> package.json; fi
 if [ "$1" = "remove" ]; then sed -i '/dsh-vision-opencode/d' package.json; fi
 EOF
@@ -79,6 +80,14 @@ grep -q 'agent-default-model' "$SETTINGS" && ok "其他配置保留" || bad "其
 
 echo "== 6. uninstall 幂等 =="
 PATH="$TMP/bin:$PATH" DSH_HOME="$TMP" bash "$HERE/uninstall.sh" --profile-dir "$PROFILE" --port 1 >/dev/null && ok "重复执行不报错" || bad "重复执行失败"
+
+echo "== 7. profile 是 pnpm 工作区根时，install 用 -w 也能装上 =="
+printf 'packages:\n  - .\n' > "$PROFILE/pnpm-workspace.yaml"
+printf '{ "name": "dsh-profile-web", "private": true, "dependencies": {} }\n' > "$PROFILE/package.json"
+PATH="$TMP/bin:$PATH" DSH_HOME="$TMP" bash "$HERE/install.sh" --profile-dir "$PROFILE" >/dev/null
+grep -q '"dsh-vision-opencode"' "$PROFILE/package.json" && ok "工作区根下依赖已写入" || bad "工作区根下依赖缺失"
+PATH="$TMP/bin:$PATH" DSH_HOME="$TMP" bash "$HERE/uninstall.sh" --profile-dir "$PROFILE" --port 1 >/dev/null
+! grep -q 'dsh-vision-opencode' "$PROFILE/package.json" && ok "工作区根下依赖可卸载" || bad "工作区根下依赖残留"
 
 echo
 echo "结果: $PASS 通过, $FAIL 失败"
