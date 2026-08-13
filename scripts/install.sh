@@ -30,6 +30,7 @@ VISION_MODEL=""
 MAIN_PROVIDER=""
 MAIN_MODELS=()
 AUTO_CONVERT="true"
+AUTO_CONVERT_OVERRIDDEN=""
 PROXY=""
 
 die() { echo "✗ $*" >&2; exit 1; }
@@ -47,7 +48,7 @@ while [ $# -gt 0 ]; do
     --vision-model) VISION_MODEL="$2"; shift 2 ;;
     --main-provider) MAIN_PROVIDER="$2"; shift 2 ;;
     --main-model) MAIN_MODELS+=("$2"); shift 2 ;;
-    --no-auto-convert) AUTO_CONVERT="false"; shift ;;
+    --no-auto-convert) AUTO_CONVERT="false"; AUTO_CONVERT_OVERRIDDEN="1"; shift ;;
     --proxy) PROXY="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) die "未知参数: $1（--help 查看用法）" ;;
@@ -100,7 +101,47 @@ else
   } >> cordis.patch.yml
 fi
 
-# ---- 3. 写 settings.yaml 的 vision-opencode 段（幂等：已存在则跳过）----
+# ---- 3. 写 settings.yaml 的 vision-opencode 段（幂等 + 合并）----
+# 段已存在时：命令行参数覆盖对应键，未传的参数继承现有值，然后整段重写；
+# 段不存在时直接追加。全程不会产生重复键。
+extract_key() {
+  # $1 = 键名；输出现有段中该键的标量值（无则空）
+  awk -v k="$1" '
+    $0 ~ /^vision-opencode:/ { in_sec=1; next }
+    in_sec && /^[^ ]/ { exit }
+    in_sec && $0 ~ "^  " k ":" {
+      v = substr($0, index($0, ":") + 1); gsub(/^[ \t]+|[ \t]+$/, "", v);
+      if (v == "''" || v == "\"\"") v = "";
+      print v; exit
+    }
+  ' "$SETTINGS_FILE" 2>/dev/null || true
+}
+extract_list() {
+  # 输出现有段 mainModels 列表（每行一个 id）
+  awk '
+    $0 ~ /^vision-opencode:/ { in_sec=1; next }
+    in_sec && /^[^ ]/ { exit }
+    in_sec && /^[ ]+mainModels:/ { in_list=1; next }
+    in_list && /^[ ]+- / { line=$0; sub(/^[ ]+- /, "", line); print line; next }
+    in_list && /^[ ]/ { next }
+    in_list { exit }
+  ' "$SETTINGS_FILE" 2>/dev/null || true
+}
+
+if [ -f "$SETTINGS_FILE" ] && grep -q '^vision-opencode:' "$SETTINGS_FILE"; then
+  info "vision-opencode 段已存在：合并参数后整段重写"
+  [ -n "$VISION_PROVIDER" ] || VISION_PROVIDER="$(extract_key provider)"
+  [ -n "$VISION_MODEL" ] || VISION_MODEL="$(extract_key model)"
+  if [ "${AUTO_CONVERT_OVERRIDDEN:-0}" != "1" ]; then
+    AUTO_CONVERT="$(extract_key autoConvert)"
+  fi
+  [ -n "$AUTO_CONVERT" ] || AUTO_CONVERT="true"
+  [ -n "$MAIN_PROVIDER" ] || MAIN_PROVIDER="$(extract_key mainProvider)"
+  if [ ${#MAIN_MODELS[@]} -eq 0 ]; then
+    while IFS= read -r m; do [ -n "$m" ] && MAIN_MODELS+=("$m"); done < <(extract_list)
+  fi
+fi
+
 SETTINGS_BLOCK="vision-opencode:"
 if [ -n "$VISION_PROVIDER" ] && [ -n "$VISION_MODEL" ]; then
   SETTINGS_BLOCK="$SETTINGS_BLOCK
@@ -128,18 +169,26 @@ const fs = require('fs');
 const file = process.env.SETTINGS_FILE;
 const block = process.env.SETTINGS_BLOCK;
 let text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-if (/^vision-opencode:\s*$/m.test(text)) {
-  console.log('→ settings.yaml 的 vision-opencode 段已存在，跳过');
-  process.exit(0);
-}
-// 卸载端点自清理后可能残留内联空对象（vision-opencode: {}）；
-// 原位替换成完整配置段，避免追加后出现重复键。
-const emptyInline = text.match(/^vision-opencode:\s*\{\s*\}\s*\n?/m);
-if (emptyInline !== null) {
-  text = text.replace(emptyInline[0], block + '\n');
-  fs.writeFileSync(file, text);
-  console.log('→ 已将 settings.yaml 的 vision-opencode: {} 替换为完整配置段');
-  process.exit(0);
+// 先移除已有段（块形式或内联 {} 形式），再统一追加合并后的新段。
+const m = text.match(/^vision-opencode:.*$/m);
+if (m !== null) {
+  const lines = text.split('\n');
+  const start = text.slice(0, m.index).split('\n').length - 1;
+  const out = [];
+  let skip = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (i === start) {
+      skip = lines[i].slice('vision-opencode:'.length).trim() === '';
+      continue;
+    }
+    if (skip) {
+      if (/^\s/.test(lines[i]) || lines[i].trim() === '') continue;
+      skip = false;
+    }
+    out.push(lines[i]);
+  }
+  text = out.join('\n').replace(/\n{3,}$/g, '\n\n');
+  if (text.endsWith('\n\n')) text = text.slice(0, -1);
 }
 if (text.length > 0 && !text.endsWith('\n')) text += '\n';
 text += block + '\n';

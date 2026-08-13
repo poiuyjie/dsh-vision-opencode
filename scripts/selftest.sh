@@ -110,6 +110,18 @@ printf '{ "name": "dsh-profile-web", "private": true, "dependencies": {} }\n' > 
 PATH="$TMP/bin:$PATH" DSH_HOME="$FRESH" bash "$HERE/install.sh" --profile-dir "$FRESH/profile" --vision-provider acme --vision-model eagle-eye >/dev/null
 grep -q 'provider: acme' "$FRESH/settings.yaml" && grep -q 'model: eagle-eye' "$FRESH/settings.yaml" && ok "指定识图模型已写入" || bad "指定识图模型未写入"
 
+echo "== 11. settings 段已存在时参数合并重写（覆盖 + 补写 + 继承）=="
+PATH="$TMP/bin:$PATH" DSH_HOME="$FRESH" bash "$HERE/install.sh" --profile-dir "$FRESH/profile" \
+  --vision-provider new-p --vision-model new-m --main-provider mp --main-model mm1 --main-model mm2 >/dev/null
+grep -q 'provider: new-p' "$FRESH/settings.yaml" && grep -q 'model: new-m' "$FRESH/settings.yaml" && ok "新参数覆盖旧值" || bad "参数未覆盖"
+grep -q 'mainProvider: mp' "$FRESH/settings.yaml" && grep -q '    - mm1' "$FRESH/settings.yaml" && grep -q '    - mm2' "$FRESH/settings.yaml" && ok "mainProvider/mainModels 已补写" || bad "main 参数未写入"
+grep -q 'autoConvert: true' "$FRESH/settings.yaml" && ok "未传参数继承现有值" || bad "继承失败"
+[ "$(grep -c '^vision-opencode:' "$FRESH/settings.yaml")" = "1" ] && ok "段唯一（无重复键）" || bad "段重复"
+
+echo "== 12. 合并后再跑（不带参数）保持既有值 =="
+PATH="$TMP/bin:$PATH" DSH_HOME="$FRESH" bash "$HERE/install.sh" --profile-dir "$FRESH/profile" >/dev/null
+grep -q 'provider: new-p' "$FRESH/settings.yaml" && grep -q 'mainProvider: mp' "$FRESH/settings.yaml" && grep -q '    - mm1' "$FRESH/settings.yaml" && ok "无参数重跑保留既有配置" || bad "无参数重跑丢失配置"
+
 echo
 echo "结果: $PASS 通过, $FAIL 失败"
 [ "$FAIL" = "0" ]
