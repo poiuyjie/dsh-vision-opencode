@@ -147,7 +147,7 @@ export function apply(ctx, entry) {
         if (!hasVisionModel(route)) {
           return 'No vision model has been configured yet. The vision_read_image tool exists but will fail with a "not configured" error until the user picks a vision model from the 「识图模型」 selector next to the input box (it lists every image-capable model across the user\'s providers). If image understanding is needed, ask the user to select one there first.';
         }
-        return `A dedicated vision model (${route.provider}/${route.model}) is available through the vision_read_image tool. Use it proactively whenever image content must be understood: the user references an image file in the workspace, a tool result points at an image path, or you need OCR, chart reading, or scene description. Images the user attaches in chat are already analyzed automatically before reaching you — do not re-describe them. If the tool reports the vision model unavailable, say so to the user and continue the task without the image.`;
+        return `A dedicated vision model (${route.provider}/${route.model}) is available through the vision_read_image tool. Use it proactively whenever image content must be understood: the user references an image file in the workspace, a tool result points at an image path, or you need OCR, chart reading, or scene description. Images the user attaches in chat are already analyzed automatically before reaching you — instead of the image you receive a text block starting with "[图片内容分析". That text IS the image the user sent in that message: treat it as the attached image, never claim that no image was attached, and only ask which image is meant when the user refers to a different file. If the tool reports the vision model unavailable, say so to the user and continue the task without the image.`;
       },
     });
   }
@@ -353,7 +353,7 @@ export function apply(ctx, entry) {
   function formatAnalyses(analyses, route) {
     return {
       type: 'text',
-      text: `[图片内容分析（识图模型 ${route.provider}/${route.model} 自动生成）]\n${analyses.join('\n\n')}`,
+      text: `[图片内容分析（识图模型 ${route.provider}/${route.model} 自动生成）——以下就是本条消息中用户发送图片的内容]\n${analyses.join('\n\n')}`,
     };
   }
 
