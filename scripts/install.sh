@@ -82,6 +82,13 @@ fi
 
 # ---- 2. 注册 cordis.patch.yml 条目（幂等：已有 id: vision-opencode 则跳过）----
 touch cordis.patch.yml
+# 空数组占位（卸载脚本收尾产物或历史遗留）不能与条目共存：
+# "[]" 之后跟 "- insert:" 会被 YAML 当成两个文档，dsh 启动直接报错。
+# 无论是否已有本插件条目，先清掉占位行（同时自愈旧的坏文件）。
+if grep -Eq '^\s*\[\s*\]\s*$' cordis.patch.yml; then
+  sed -i '/^\s*\[\s*\]\s*$/d' cordis.patch.yml
+  info "已移除 cordis.patch.yml 的空数组占位"
+fi
 if grep -q 'id: vision-opencode' cordis.patch.yml; then
   info "cordis.patch.yml 条目已存在，跳过"
 else

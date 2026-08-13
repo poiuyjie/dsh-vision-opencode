@@ -79,6 +79,8 @@ pnpm add -w dsh-vision-opencode   # 目前不可用，请先用方式 A；-w 同
       name: 'dsh-vision-opencode'
 ```
 
+> 若文件里有一行空数组占位 `[]`（一键卸载脚本收尾会留），先删掉那一行再追加——`[]` 与条目共存会被 YAML 当成两个文档，dsh 启动会报错。
+
 ## 配置
 
 编辑 `~/.dsh/settings.yaml`：

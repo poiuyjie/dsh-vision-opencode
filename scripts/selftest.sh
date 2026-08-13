@@ -89,6 +89,20 @@ grep -q '"dsh-vision-opencode"' "$PROFILE/package.json" && ok "工作区根下�
 PATH="$TMP/bin:$PATH" DSH_HOME="$TMP" bash "$HERE/uninstall.sh" --profile-dir "$PROFILE" --port 1 >/dev/null
 ! grep -q 'dsh-vision-opencode' "$PROFILE/package.json" && ok "工作区根下依赖可卸载" || bad "工作区根下依赖残留"
 
+echo "== 8. 卸载留下的 [] 占位上重装：不得与条目共存（双文档崩溃回归）=="
+printf '# 只剩注释\n\n[]\n' > "$PROFILE/cordis.patch.yml"
+printf '{ "name": "dsh-profile-web", "private": true, "dependencies": {} }\n' > "$PROFILE/package.json"
+PATH="$TMP/bin:$PATH" DSH_HOME="$TMP" bash "$HERE/install.sh" --profile-dir "$PROFILE" >/dev/null
+grep -q 'id: vision-opencode' "$PROFILE/cordis.patch.yml" && ok "条目已写入" || bad "条目缺失"
+! grep -Eq '^\s*\[\s*\]\s*$' "$PROFILE/cordis.patch.yml" && ok "[] 占位已移除（不再双文档）" || bad "[] 占位仍与条目共存"
+[ "$(grep -Ev '^\s*(#|$)' "$PROFILE/cordis.patch.yml" | head -1)" = "- insert:" ] && ok "首个非注释条目是 - insert:" || bad "文件结构异常"
+grep -q '^#' "$PROFILE/cordis.patch.yml" && ok "头部注释保留" || bad "头部注释丢失"
+
+echo "== 9. 坏文件（[] + 条目共存）能被 install 自愈 =="
+printf '# 注释\n\n[]\n\n- insert:\n    - id: vision-opencode\n      name: '"'"'dsh-vision-opencode'"'"'\n' > "$PROFILE/cordis.patch.yml"
+PATH="$TMP/bin:$PATH" DSH_HOME="$TMP" bash "$HERE/install.sh" --profile-dir "$PROFILE" >/dev/null
+! grep -Eq '^\s*\[\s*\]\s*$' "$PROFILE/cordis.patch.yml" && grep -q 'id: vision-opencode' "$PROFILE/cordis.patch.yml" && ok "坏文件已自愈（占位删除、条目保留）" || bad "坏文件未自愈"
+
 echo
 echo "结果: $PASS 通过, $FAIL 失败"
 [ "$FAIL" = "0" ]

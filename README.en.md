@@ -79,6 +79,8 @@ Edit `~/.dsh/profiles/web/cordis.patch.yml` and append:
       name: 'dsh-vision-opencode'
 ```
 
+> If the file contains an empty-array placeholder line `[]` (left by the one-click uninstall script), delete it before appending — `[]` followed by an entry is parsed as two YAML documents and dsh will fail to boot.
+
 ## Configuration
 
 Edit `~/.dsh/settings.yaml`:
