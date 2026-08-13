@@ -58,11 +58,13 @@ cd ~/.dsh/profiles/web
 pnpm add github:poiuyjie/dsh-vision-opencode
 ```
 
-### 方式 B：npm 安装（发布后）
+### 方式 B：npm 安装
+
+> ⚠️ 暂未发布到 npm（registry 上还不存在这个包）。发布后即可使用更短的命令：
 
 ```bash
 cd ~/.dsh/profiles/web
-pnpm add dsh-vision-opencode
+pnpm add dsh-vision-opencode   # 目前不可用，请先用方式 A
 ```
 
 ## 注册进 cordis

@@ -58,11 +58,13 @@ cd ~/.dsh/profiles/web
 pnpm add github:poiuyjie/dsh-vision-opencode
 ```
 
-### Option B: Install from npm (once published)
+### Option B: Install from npm
+
+> ⚠️ Not published to npm yet (the package does not exist on the registry). Once published, the shorter command below will work:
 
 ```bash
 cd ~/.dsh/profiles/web
-pnpm add dsh-vision-opencode
+pnpm add dsh-vision-opencode   # not available yet — use Option A for now
 ```
 
 ## Register in cordis
