@@ -184,7 +184,9 @@ export function apply(ctx, entry) {
             ? `⚠️ 图片分析失败（用时 ${seconds}s，识图模型 ${route.provider}/${route.model}）：${errorText}`
             : `✅ 图片分析完成（用时 ${seconds}s，识图模型 ${route.provider}/${route.model}）`;
           session.append('user/message', visionStatusMessage(text), {
-            surfaceOp: 'replace',
+            // surface 的替换操作符必须是 { op:'replace', start, end } 对象；
+            // 写成字符串 'replace' 会被 surface 校验拒绝（状态行将永远卡在"正在分析"）
+            surfaceOp: { op: 'replace', start: event.seq, end: event.seq },
             sourceEventSeqs: [event.seq],
           });
         } catch {
@@ -449,6 +451,10 @@ export function apply(ctx, entry) {
             if (analysisCache.size >= 128) analysisCache.clear();
             analysisCache.set(key, analysis);
           }
+        } else {
+          // 缓存命中：同一张图重复出现时直接复用结论，并明确标注
+          // 未重复调用识图模型，避免用户误以为"识别了两次"
+          analysis = `${analysis}\n（注：该图片与之前的图片相同，分析结论复用缓存，未重复调用识图模型）`;
         }
         sink.push(analysis);
         continue;
