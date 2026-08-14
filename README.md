@@ -64,6 +64,8 @@ $uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-v
 & ([scriptblock]::Create($uninstall))
 ```
 
+> **重要：先备份图片会话。** 卸载后，包含图片的旧对话可能无法继续发送给纯文本主模型。请在卸载前把关键结论、图片描述、代码和待办事项复制或导出为 Markdown（`.md`）文件，再执行卸载；原始图片会话不会被插件自动转换。
+
 > 安装脚本不会选择或写入任何识图模型。需要代理时再追加 `--proxy` 或 `-Proxy`。
 >
 > `mainProvider/mainModels` 只用于指定要接管的纯文本主模型，不是识图模型；已有配置无需重复填写，没有配置时请按下方“配置”章节设置。

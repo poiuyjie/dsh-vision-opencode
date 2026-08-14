@@ -64,6 +64,8 @@ $uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-v
 & ([scriptblock]::Create($uninstall))
 ```
 
+> **Important: back up image conversations first.** After uninstalling, old conversations that contain images may no longer be usable with a text-only main model. Before uninstalling, copy or export key conclusions, image descriptions, code, and TODOs to a Markdown (`.md`) file. The plugin does not automatically convert or rewrite the original image history.
+
 > The installer never selects or writes a vision model. Add `--proxy` or `-Proxy` only when needed.
 >
 > `mainProvider/mainModels` only define which text-only main route to intercept; they are not vision-model selection. Keep existing settings, or configure them in the section below if needed.
