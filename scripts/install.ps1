@@ -166,4 +166,4 @@ foreach ($line in $block) { $output.Add($line) }
 Write-Utf8 $settingsFile (($output -join "`n") + "`n")
 
 Write-Host ''
-Write-Host 'Installation complete. Restart dsh, then choose a vision model from the composer dropdown if one was not specified.'
+Write-Host 'Installation complete. Restart dsh, refresh the browser page, then choose a vision model from the composer dropdown if one was not specified.'
