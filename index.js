@@ -74,7 +74,7 @@ const VISION_SYSTEM_PROMPT = [
 ].join('\n');
 
 export const name = 'vision-opencode';
-export const inject = ['tools', 'llm', 'fs', 'attachments', 'systemPrompt'];
+export const inject = ['tools', 'llm', 'fs', 'attachments', 'sessions', 'systemPrompt'];
 
 /** 序列化 JSON 响应。 */
 function json(res, status, value) {
@@ -153,6 +153,48 @@ export function apply(ctx, entry) {
     if (typeof model !== 'string' || !ids.has(model)) return;
     return `read_image is blocked for the current main model (${model}): it only accepts text input, so a real image block would make the provider reject the request with a 400 INVALID_REQUEST error. Use the vision_read_image tool instead — it returns a text analysis of the image.`;
   });
+
+  // ---- 会话内可见的活动指示：正在调用识图模型 → 完成耗时 ----
+  // 发图自动转换发生在主模型流式回复之前，UI 上此前没有任何活动指示，
+  // 用户容易误以为卡住。这里在会话表面追加一条可见状态消息（追加即显示），
+  // 完成后用 replace 替换成带耗时的完成行；主模型只会看到最终一行。
+  const visionStatusMessage = (text) => createUserMessage({
+    content: [{ type: 'text', text }],
+    source: { kind: 'plugin', plugin: 'vision-opencode' },
+  });
+  /**
+   * 在请求所属会话里追加"正在分析图片"状态行，返回一个结束函数：
+   * 调用它（可带错误信息）会把状态行替换为带耗时的完成/失败行。
+   * 任何一步失败都不影响主流程（展示只是辅助）。
+   */
+  function appendVisionStatus(llmOptions, route) {
+    try {
+      const sessionId = typeof llmOptions?.sessionId === 'string' ? llmOptions.sessionId : void 0;
+      if (sessionId === void 0) return void 0;
+      const session = ctx.get('sessions')?.get(sessionId);
+      if (session === void 0 || typeof session.append !== 'function') return void 0;
+      const started = Date.now();
+      const event = session.append('user/message', visionStatusMessage(
+        `🔍 识图模型 ${route.provider}/${route.model} 正在分析图片…`,
+      ), { surfaceOp: 'append' });
+      return (errorText) => {
+        try {
+          const seconds = ((Date.now() - started) / 1000).toFixed(1);
+          const text = errorText !== void 0
+            ? `⚠️ 图片分析失败（用时 ${seconds}s，识图模型 ${route.provider}/${route.model}）：${errorText}`
+            : `✅ 图片分析完成（用时 ${seconds}s，识图模型 ${route.provider}/${route.model}）`;
+          session.append('user/message', visionStatusMessage(text), {
+            surfaceOp: 'replace',
+            sourceEventSeqs: [event.seq],
+          });
+        } catch {
+          // 状态行更新失败不影响主流程
+        }
+      };
+    } catch {
+      return void 0;
+    }
+  }
 
   // ---- 系统提示词：让主模型「知道」识图模型存在，并在必要时主动调用 ----
   // 工具 schema 会自动出现在每个 step 的请求里，这一节提示词负责强化调用时机：
@@ -462,6 +504,7 @@ export function apply(ctx, entry) {
     // 发出去，再把它的 chunk 转交给外层消费者。BYPASS 防止嵌套调用再次触发本监听器。
     return (async function* visionTextStream() {
       let converted;
+      const finishStatus = appendVisionStatus(llmOptions, route);
       try {
         converted = [];
         for (const message of messages) {
@@ -480,9 +523,11 @@ export function apply(ctx, entry) {
             content: [...content, formatAnalyses(sink, route)],
           }));
         }
+        finishStatus?.();
       } catch (error) {
-        // 调用方取消：向上抛（回合正在结束，降级没有意义）
+        // 调用方取消：向上抛（回合正在结束，降级没有意义，也不更新状态行）
         if (error instanceof VisionCallerAborted || llmOptions.signal?.aborted) throw error;
+        finishStatus?.(error?.message ?? String(error));
         // 插件自身的意外错误也不能杀死回合：全部图片降级为占位文本，
         // 主模型照常工作并向用户说明（这是发布版的最后一道保险）。
         ctx.logger.error('vision-opencode: 图片自动转换出现意外错误，降级为占位文本', error);
@@ -655,6 +700,7 @@ export function apply(ctx, entry) {
         properties: {
           path: { type: 'string', required: true },
           analysis: { type: 'string', required: true },
+          durationMs: { type: 'number' },
         },
       },
       render: (_args, value) => [{
@@ -675,15 +721,16 @@ export function apply(ctx, entry) {
         locations: rawPath.length > 0 ? [{ path: rawPath }] : void 0,
       };
     },
-    // UI 展示：完成后在卡片内显示分析文本。
+    // UI 展示：完成后在卡片内显示分析文本与耗时。
     presentResult(_args, result) {
       const text = result.content
         .filter((block) => block.type === 'text')
         .map((block) => block.text)
         .join('');
+      const durationMs = typeof result.value?.durationMs === 'number' ? result.value.durationMs : void 0;
       return {
         card: 'generic',
-        title: '识图模型分析',
+        title: durationMs !== void 0 ? `识图模型分析（用时 ${(durationMs / 1000).toFixed(1)}s）` : '识图模型分析',
         content: [{
           type: 'text',
           text: text.length > 0 ? text : (result.isError ? '（分析失败）' : '（无文本输出）'),
@@ -722,6 +769,7 @@ export function apply(ctx, entry) {
       if (!hasVisionModel(route)) {
         throw new Error('未配置识图模型：请在输入框右侧的「识图模型」下拉中选择一个支持图片输入的模型，然后再试。');
       }
+      const startedAt = Date.now();
       let analysis;
       try {
         // 与瀑布路径共用同一个带超时+重试的识图子调用；
@@ -738,7 +786,7 @@ export function apply(ctx, entry) {
         if (error instanceof VisionCallerAborted) throw error;
         throw new Error(`vision_read_image: ${route.provider}/${route.model} 识图失败（已重试）: ${error?.message ?? String(error)}`);
       }
-      return { path: target.displayPath, analysis };
+      return { path: target.displayPath, analysis, durationMs: Date.now() - startedAt };
     },
   }));
 }
