@@ -56,7 +56,7 @@ try {
     $auto = Join-Path $temp 'auto'
     $autoProfile = Join-Path $auto 'profiles\web'
     [void](New-Item -ItemType Directory -Force -Path $autoProfile)
-    [IO.File]::WriteAllText((Join-Path $auto 'settings.yaml'), "agent-default-model:`n  provider: auto-provider`n  model: text-default`n", $utf8)
+    [IO.File]::WriteAllText((Join-Path $auto 'settings.yaml'), "agent-default-model:`n  provider: auto-provider`n  model: text-default`nvision-opencode:`n  autoConvert: true`n", $utf8)
     [IO.File]::WriteAllText((Join-Path $autoProfile 'package.json'), '{"dependencies":{}}', $utf8)
     $env:DSH_HOME = $auto
     & $install -ProfileDir $autoProfile

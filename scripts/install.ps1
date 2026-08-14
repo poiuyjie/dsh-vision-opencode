@@ -109,7 +109,7 @@ if ($section) {
   if ($MainModel.Count -eq 0) { $MainModel = @(Get-SectionList $section.Lines 'mainModels') }
   $gateState = Get-SectionScalar $section.Lines 'gateState'
 }
-if (-not $section -and -not $MainProvider -and $MainModel.Count -eq 0 -and (Test-Path -LiteralPath $settingsFile)) {
+if (-not $MainProvider -and $MainModel.Count -eq 0 -and (Test-Path -LiteralPath $settingsFile)) {
   $defaultMatch = [regex]::Match($settingsText, '(?ms)^agent-default-model:\s*\r?\n(?:(?!^[^\s]).)*?^  provider:\s*(.*?)\s*$')
   $modelMatch = [regex]::Match($settingsText, '(?ms)^agent-default-model:\s*\r?\n(?:(?!^[^\s]).)*?^  model:\s*(.*?)\s*$')
   if ($defaultMatch.Success -and $modelMatch.Success) {
