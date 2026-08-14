@@ -134,6 +134,26 @@ export function apply(ctx, entry) {
     void ensureGateOverrides();
   });
 
+  // ---- 结构性拦截：执行前拒绝内置 read_image，防止真实图片进入纯文本主模型上下文 ----
+  // 背景：本插件为放行图片提交闸门，把纯文本主模型在 llm-pi-ai 里声明成了
+  // "支持图片输入"，副作用是内置 read_image 的自身门禁也放行了——模型一旦
+  // 调用它，工具结果会把真实 image 块注入上下文，上游纯文本 API 直接
+  // 400 INVALID_REQUEST。用 tools.guard 在"执行前"拒绝（结构上图片永不
+  // 进入上下文），拒绝原因会作为工具结果交给模型，引导它改用 vision_read_image。
+  ctx.tools.guard((exec) => {
+    if (exec?.name !== 'read_image') return;
+    const ids = new Set([...SYNTHETIC_IMAGE_MODELS, ...options().mainModels]);
+    if (ids.size === 0) return; // 未管理任何文本主模型时不干预
+    let model;
+    try {
+      model = exec.agent?.session?.requestHeader?.()?.config?.model;
+    } catch {
+      model = void 0;
+    }
+    if (typeof model !== 'string' || !ids.has(model)) return;
+    return `read_image is blocked for the current main model (${model}): it only accepts text input, so a real image block would make the provider reject the request with a 400 INVALID_REQUEST error. Use the vision_read_image tool instead — it returns a text analysis of the image.`;
+  });
+
   // ---- 系统提示词：让主模型「知道」识图模型存在，并在必要时主动调用 ----
   // 工具 schema 会自动出现在每个 step 的请求里，这一节提示词负责强化调用时机：
   // 用户提到/工具结果指向图片文件路径、需要 OCR/图表/场景理解时主动调用。
@@ -144,10 +164,11 @@ export function apply(ctx, entry) {
       order: 112,
       text: () => {
         const route = options();
+        const noReadImage = 'Never call the built-in read_image tool: the current main model only accepts text, and read_image injects a real image block into the context, which makes the provider reject the request with a 400 INVALID_REQUEST error. Always use vision_read_image instead — it returns text analysis.';
         if (!hasVisionModel(route)) {
-          return 'No vision model has been configured yet. The vision_read_image tool exists but will fail with a "not configured" error until the user picks a vision model from the 「识图模型」 selector next to the input box (it lists every image-capable model across the user\'s providers). If image understanding is needed, ask the user to select one there first.';
+          return `No vision model has been configured yet. The vision_read_image tool exists but will fail with a "not configured" error until the user picks a vision model from the 「识图模型」 selector next to the input box (it lists every image-capable model across the user's providers). ${noReadImage} If image understanding is needed, ask the user to select one there first.`;
         }
-        return `A dedicated vision model (${route.provider}/${route.model}) is available through the vision_read_image tool. Use it proactively whenever image content must be understood: the user references an image file in the workspace, a tool result points at an image path, or you need OCR, chart reading, or scene description. Images the user attaches in chat are already analyzed automatically before reaching you — instead of the image you receive a text block starting with "[图片内容分析". That text IS the image the user sent in that message: treat it as the attached image, never claim that no image was attached, and only ask which image is meant when the user refers to a different file. If the tool reports the vision model unavailable, say so to the user and continue the task without the image.`;
+        return `A dedicated vision model (${route.provider}/${route.model}) is available through the vision_read_image tool. Use it proactively whenever image content must be understood: the user references an image file in the workspace, a tool result points at an image path, or you need OCR, chart reading, or scene description. ${noReadImage} Images the user attaches in chat are already analyzed automatically before reaching you — instead of the image you receive a text block starting with "[图片内容分析". That text IS the image the user sent in that message: treat it as the attached image, never claim that no image was attached, and only ask which image is meant when the user refers to a different file. If the tool reports the vision model unavailable, say so to the user and continue the task without the image.`;
       },
     });
   }
@@ -409,22 +430,29 @@ export function apply(ctx, entry) {
     const route = options();
     const isVisionRoute = llmOptions.provider === route.provider && llmOptions.model === route.model;
     const messages = Array.isArray(llmOptions.messages) ? llmOptions.messages : [];
-    const hasImage = messages.some((message) => contentHasImage(message.content ?? []));
+    // 防御：部分消息的 content 可能是字符串（历史/压缩产物），contentHasImage 只接受数组；
+    // 若本监听器因此抛错，请求可能未经转换直接打到上游（400）。
+    const hasImage = messages.some((message) => Array.isArray(message?.content) && contentHasImage(message.content));
     if (!hasImage || isVisionRoute) return next();
     if (!hasVisionModel(route)) {
       // 未配置识图模型：不能替用户假定任何模型。图片降级为指引文本，
       // 主模型照常完成回合并提示用户先去选择器里选一个识图模型。
       return (async function* unconfiguredStream() {
-        const converted = messages.map((message) => freezeMessage({
-          ...message,
-          content: [
-            ...(message.content ?? []).filter((block) => block.type !== 'image'),
-            { type: 'text', text: '[识图模型未配置] 用户发送的图片未能自动分析：请先点击输入框右侧的「识图模型」下拉，从自己供应商中支持图片输入的模型里选择一个，然后重发图片。' },
-          ],
-        }));
+        const converted = messages.map((message) => {
+          if (!Array.isArray(message?.content)) return message;
+          return freezeMessage({
+            ...message,
+            content: [
+              ...message.content.filter((block) => block.type !== 'image'),
+              { type: 'text', text: '[识图模型未配置] 用户发送的图片未能自动分析：请先点击输入框右侧的「识图模型」下拉，从自己供应商中支持图片输入的模型里选择一个，然后重发图片。' },
+            ],
+          });
+        });
         yield* ctx.llm.stream({ ...llmOptions, messages: converted, [BYPASS]: true });
       })();
     }
+    // 诊断日志：记录每次实际触发转换的请求（帮助定位"图片漏网"类问题）
+    ctx.logger.info(`vision-opencode: 请求含图片，开始自动转换（目标 ${llmOptions.provider}/${llmOptions.model}，${messages.length} 条消息）`);
     // 不能就地改 llmOptions.messages：agent-loop 拼出的请求是 deep-frozen 的
     // （冻结正是为了强制"监听器只读不写"，直接赋值会抛
     //  "Cannot assign to read only property 'messages'"）。
@@ -437,8 +465,12 @@ export function apply(ctx, entry) {
       try {
         converted = [];
         for (const message of messages) {
+          if (!Array.isArray(message?.content)) {
+            converted.push(message);
+            continue;
+          }
           const sink = [];
-          const content = await convertContent(message.content ?? [], llmOptions.signal, sink, route);
+          const content = await convertContent(message.content, llmOptions.signal, sink, route);
           if (sink.length === 0) {
             converted.push(message);
             continue;
@@ -454,13 +486,16 @@ export function apply(ctx, entry) {
         // 插件自身的意外错误也不能杀死回合：全部图片降级为占位文本，
         // 主模型照常工作并向用户说明（这是发布版的最后一道保险）。
         ctx.logger.error('vision-opencode: 图片自动转换出现意外错误，降级为占位文本', error);
-        converted = messages.map((message) => freezeMessage({
-          ...message,
-          content: [
-            ...(message.content ?? []).filter((block) => block.type !== 'image'),
-            { type: 'text', text: fallbackAnalysisText(route, error) },
-          ],
-        }));
+        converted = messages.map((message) => {
+          if (!Array.isArray(message?.content)) return message;
+          return freezeMessage({
+            ...message,
+            content: [
+              ...message.content.filter((block) => block.type !== 'image'),
+              { type: 'text', text: fallbackAnalysisText(route, error) },
+            ],
+          });
+        });
       }
       const rewritten = {
         ...llmOptions,
@@ -601,7 +636,7 @@ export function apply(ctx, entry) {
   // ---- 工具：vision_read_image ----
   ctx.tools.register(defineTool({
     name: 'vision_read_image',
-    description: `Use the configured vision model (selected via the 「识图模型」 dropdown next to the input box, which lists image-capable models across all providers) to read and analyze an image file (PNG/JPEG/WebP/GIF) and return a detailed text description: OCR transcription, layout, chart values, scene. Use this tool whenever image content must be understood — including when the current main model does not support image input. If no vision model is configured yet, this tool fails with guidance.`,
+    description: `Use the configured vision model (selected via the 「识图模型」 dropdown next to the input box, which lists image-capable models across all providers) to read and analyze an image file (PNG/JPEG/WebP/GIF) and return a detailed text description: OCR transcription, layout, chart values, scene. Use this tool whenever image content must be understood — including when the current main model does not support image input. Prefer this tool over the built-in read_image tool, which injects a real image block and makes text-only providers reject the request with a 400 error. If no vision model is configured yet, this tool fails with guidance.`,
     parameters: {
       file_path: {
         type: 'string',
