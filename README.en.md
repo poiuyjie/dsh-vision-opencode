@@ -67,6 +67,8 @@ $uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-v
 > The installer never selects or writes a vision model. Add `--proxy` or `-Proxy` only when needed.
 >
 > `mainProvider/mainModels` only define which text-only main route to intercept; they are not vision-model selection. Keep existing settings, or configure them in the section below if needed.
+>
+> For legacy installs without a `gateState` ownership record, uninstall stops before changing files when image gates are detected. Restore those values first so existing image sessions do not break.
 
 ## Manual Install
 

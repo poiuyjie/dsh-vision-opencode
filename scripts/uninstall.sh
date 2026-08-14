@@ -30,6 +30,16 @@ PROXY=""
 die() { echo "✗ $*" >&2; exit 1; }
 info() { echo "→ $*"; }
 
+has_image_override() {
+  [ -f "$1" ] || return 1
+  awk '
+    /modelOverrides:/ { inside=1; next }
+    inside && /^[^ ]/ { inside=0 }
+    inside && /(^|[[:space:]])image([[:space:]]|$)/ { found=1 }
+    END { exit found ? 0 : 1 }
+  ' "$1"
+}
+
 require_value() {
   [ "$#" -ge 2 ] && [ -n "${2:-}" ] || die "$1 需要一个非空值"
 }
@@ -65,6 +75,13 @@ fi
 
 ENDPOINT="http://127.0.0.1:$PORT/vision-opencode"
 
+# Legacy installs may have opened the image gate without an ownership record.
+# Refuse to clear plugin settings first; otherwise the user is left in a half-uninstalled state.
+if has_image_override "$SETTINGS_FILE" \
+  && ! grep -Eq '^  gateState:[[:space:]]*[^[:space:]]' "$SETTINGS_FILE"; then
+  die "检测到没有 gateState 所有权记录的图片 modelOverrides，已中止卸载。请先手动恢复对应 input，或重新安装新版插件后再卸载。"
+fi
+
 # ---- 1. dsh 运行时：插件自清理（还原 modelOverrides，最安全）----
 CLEANED_BY_ENDPOINT=0
 if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 3 "$ENDPOINT/config" >/dev/null 2>&1; then
@@ -73,6 +90,9 @@ if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 3 "$ENDPOINT/config" 
     echo "$RESULT"
     CLEANED_BY_ENDPOINT=1
     GATE_REMOVED=$(printf '%s' "$RESULT" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{try{const n=JSON.parse(s).gateOverridesRemoved;process.stdout.write(typeof n==="number"?String(n):"")}catch{}})')
+    if [ "${GATE_REMOVED:-0}" = "0" ] && has_image_override "$SETTINGS_FILE"; then
+      die "检测到未能由插件证明所有权的图片 modelOverrides，已中止卸载。请先手动恢复对应 input，确认 settings.yaml 不再包含该残留后重试。"
+    fi
   else
     echo "⚠ 自清理端点调用失败（插件可能还是旧版本，没有 /uninstall 端点）；继续本地清理，但 llm-pi-ai.modelOverrides 需要手动处理（见末尾提示）"
   fi
@@ -86,6 +106,10 @@ else
   （纯文本主模型声明了 input: [text, image]），请手动删除，否则卸载后发图片会打到真实 API 报错。
   更稳妥的做法：先启动 dsh 再重新执行本脚本，让插件自清理。
 EOF
+fi
+
+if [ "$CLEANED_BY_ENDPOINT" = "0" ] && has_image_override "$SETTINGS_FILE"; then
+  die "未能运行插件自清理，且 settings.yaml 可能包含图片 modelOverrides；为避免卸载后破坏旧会话，已中止。请启动 dsh 完成自清理后重试。"
 fi
 
 # ---- 2. 移除 settings.yaml 的 vision-opencode 段（幂等；该段本身无害）----

@@ -82,6 +82,14 @@ if ($Proxy) {
   if ($Proxy -match '^socks') { $env:all_proxy = $Proxy }
 }
 
+if (Test-Path -LiteralPath $settingsFile) {
+  $preflightSettings = [IO.File]::ReadAllText($settingsFile)
+  if ($preflightSettings -match '(?ms)modelOverrides:.*?input:.*?image' -and
+      $preflightSettings -notmatch '(?m)^  gateState:\s*\S') {
+    throw 'Uninstall stopped: settings.yaml contains image modelOverrides without a gateState ownership record. Restore the affected input values manually, or reinstall the current plugin before uninstalling again.'
+  }
+}
+
 $cleanedByEndpoint = $false
 $gateRemoved = $null
 $requestOptions = @{ TimeoutSec = 3; ErrorAction = 'Stop' }
@@ -93,9 +101,24 @@ try {
   $cleanedByEndpoint = $true
   $gateRemoved = $result.gateOverridesRemoved
   $result | ConvertTo-Json -Compress | Write-Host
+  $removedCount = if ($null -eq $gateRemoved) { 0 } else { [int]$gateRemoved }
+  if ($removedCount -eq 0 -and (Test-Path -LiteralPath $settingsFile)) {
+    $residualSettings = [IO.File]::ReadAllText($settingsFile)
+    if ($residualSettings -match '(?ms)modelOverrides:.*?input:.*?image') {
+      throw 'Uninstall stopped: settings.yaml contains image modelOverrides whose ownership cannot be proven. Restore the affected input values manually, then retry.'
+    }
+  }
 } catch {
+  if ($_.Exception.Message -like 'Uninstall stopped:*') { throw }
   Write-Warning 'DSH is not running, the port is wrong, or runtime cleanup failed. Local files will still be removed.'
   Write-Warning 'Any plugin-owned llm-pi-ai modelOverrides must be restored manually, or rerun this script while DSH is running.'
+}
+
+if (-not $cleanedByEndpoint -and (Test-Path -LiteralPath $settingsFile)) {
+  $residualSettings = [IO.File]::ReadAllText($settingsFile)
+  if ($residualSettings -match '(?ms)modelOverrides:.*?input:.*?image') {
+    throw 'Uninstall stopped: runtime cleanup did not run and settings.yaml may contain image modelOverrides. Start dsh, let the plugin clean itself, then retry.'
+  }
 }
 
 if (Test-Path -LiteralPath $settingsFile) {

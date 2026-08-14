@@ -52,11 +52,36 @@ try {
     Assert-True ($removedSettings -notmatch '(?m)^vision-opencode:') 'removes plugin settings'
     Assert-True ($removedPatch -notmatch 'id: vision-opencode') 'removes plugin Cordis entry'
     Assert-True ($removedPatch -match 'id: other-plugin') 'preserves unrelated Cordis entries'
+
+    $legacy = Join-Path $temp 'legacy'
+    $legacyProfile = Join-Path $legacy 'profiles\web'
+    $legacySettingsPath = Join-Path $legacy 'settings.yaml'
+    $legacyPatchPath = Join-Path $legacyProfile 'cordis.patch.yml'
+    $legacyPackagePath = Join-Path $legacyProfile 'package.json'
+    [void](New-Item -ItemType Directory -Force -Path $legacyProfile)
+    $legacySettings = "llm-pi-ai:`n  providers:`n    opencode-go:`n      modelOverrides:`n        deepseek-v4-pro:`n          input: [ text, image ]`nvision-opencode:`n  provider: opencode-go`n  model: vision-model`n"
+    $legacyPatch = "- insert:`n    - id: vision-opencode`n      name: 'dsh-vision-opencode'`n"
+    $legacyPackage = '{"dependencies":{"dsh-vision-opencode":"github:poiuyjie/dsh-vision-opencode"}}'
+    [IO.File]::WriteAllText($legacySettingsPath, $legacySettings, $utf8)
+    [IO.File]::WriteAllText($legacyPatchPath, $legacyPatch, $utf8)
+    [IO.File]::WriteAllText($legacyPackagePath, $legacyPackage, $utf8)
+
+    $env:DSH_HOME = $legacy
+    $uninstallStopped = $false
+    try {
+      & $uninstall -ProfileDir $legacyProfile -Port 1
+    } catch {
+      $uninstallStopped = $_.Exception.Message -like 'Uninstall stopped:*'
+    }
+    Assert-True $uninstallStopped 'stops on legacy image gates without gateState'
+    Assert-True ([IO.File]::ReadAllText($legacySettingsPath) -eq $legacySettings) 'preserves settings after stopped uninstall'
+    Assert-True ([IO.File]::ReadAllText($legacyPatchPath) -eq $legacyPatch) 'preserves Cordis config after stopped uninstall'
+    Assert-True ([IO.File]::ReadAllText($legacyPackagePath) -eq $legacyPackage) 'preserves dependency after stopped uninstall'
   } finally {
     $env:PATH = $oldPath
     if ($null -eq $oldDshHome) { Remove-Item Env:DSH_HOME -ErrorAction SilentlyContinue } else { $env:DSH_HOME = $oldDshHome }
   }
-  Write-Host 'PowerShell selftest: 9 passed, 0 failed'
+  Write-Host 'PowerShell selftest: 13 passed, 0 failed'
 } finally {
   if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force }
 }

@@ -67,6 +67,8 @@ $uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-v
 > 安装脚本不会选择或写入任何识图模型。需要代理时再追加 `--proxy` 或 `-Proxy`。
 >
 > `mainProvider/mainModels` 只用于指定要接管的纯文本主模型，不是识图模型；已有配置无需重复填写，没有配置时请按下方“配置”章节设置。
+>
+> 旧版安装若检测到没有 `gateState` 的图片闸门，卸载脚本会主动中止，避免旧图片会话在卸载后报错；请先按提示恢复配置。
 
 ## 手动安装
 

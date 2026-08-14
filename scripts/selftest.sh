@@ -37,9 +37,9 @@ llm-pi-ai:
       apiKeyEnv: OPENCODE_GO_API_KEY
       modelOverrides:
         deepseek-v4-flash:
-          input: [ text, image ]
+          input: [ text ]
         deepseek-v4-pro:
-          input: [ text, image ]
+          input: [ text ]
 EOF
 cat > "$PROFILE/cordis.patch.yml" <<'EOF'
 # Your patch layer for this dsh profile.
@@ -127,6 +127,37 @@ sed -i '/^  autoConvert:/a\  gateState: eyJvd25lZCI6dHJ1ZX0' "$FRESH/settings.ya
 PATH="$TMP/bin:$PATH" DSH_HOME="$FRESH" bash "$HERE/install.sh" --profile-dir "$FRESH/profile" >/dev/null
 grep -Eq 'provider: (new-p|"new-p")' "$FRESH/settings.yaml" && grep -Eq 'mainProvider: (mp|"mp")' "$FRESH/settings.yaml" && grep -Eq '    - (mm1|"mm1")' "$FRESH/settings.yaml" && ok "无参数重跑保留既有配置" || bad "无参数重跑丢失配置"
 grep -q 'gateState: eyJvd25lZCI6dHJ1ZX0' "$FRESH/settings.yaml" && ok "重装保留隐藏 gateState" || bad "重装丢失 gateState"
+
+echo "== 13. 旧版图片闸门无 gateState 时必须原样中止 =="
+LEGACY="$TMP/legacy"; mkdir -p "$LEGACY/profile"
+cat > "$LEGACY/settings.yaml" <<'EOF'
+llm-pi-ai:
+  providers:
+    opencode-go:
+      modelOverrides:
+        deepseek-v4-pro:
+          input: [ text, image ]
+vision-opencode:
+  provider: opencode-go
+  model: vision-model
+EOF
+cat > "$LEGACY/profile/cordis.patch.yml" <<'EOF'
+- insert:
+    - id: vision-opencode
+      name: 'dsh-vision-opencode'
+EOF
+printf '{ "dependencies": { "dsh-vision-opencode": "github:poiuyjie/dsh-vision-opencode" } }\n' > "$LEGACY/profile/package.json"
+cp "$LEGACY/settings.yaml" "$LEGACY/settings.before"
+cp "$LEGACY/profile/cordis.patch.yml" "$LEGACY/cordis.before"
+cp "$LEGACY/profile/package.json" "$LEGACY/package.before"
+if PATH="$TMP/bin:$PATH" DSH_HOME="$LEGACY" bash "$HERE/uninstall.sh" --profile-dir "$LEGACY/profile" --port 1 >/dev/null 2>&1; then
+  bad "危险的旧版残留未阻止卸载"
+else
+  ok "危险的旧版残留会中止卸载"
+fi
+cmp -s "$LEGACY/settings.before" "$LEGACY/settings.yaml" && ok "中止后 settings 原样保留" || bad "中止后 settings 被修改"
+cmp -s "$LEGACY/cordis.before" "$LEGACY/profile/cordis.patch.yml" && ok "中止后 Cordis 原样保留" || bad "中止后 Cordis 被修改"
+cmp -s "$LEGACY/package.before" "$LEGACY/profile/package.json" && ok "中止后依赖原样保留" || bad "中止后依赖被修改"
 
 echo
 echo "结果: $PASS 通过, $FAIL 失败"
