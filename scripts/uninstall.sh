@@ -30,27 +30,36 @@ PROXY=""
 die() { echo "✗ $*" >&2; exit 1; }
 info() { echo "→ $*"; }
 
+require_value() {
+  [ "$#" -ge 2 ] && [ -n "${2:-}" ] || die "$1 需要一个非空值"
+}
+
 usage() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  cat <<'EOF'
+用法：uninstall.sh [选项]
+  --profile-dir <路径>  dsh profile 目录（默认 $DSH_HOME/profiles/web）
+  --port <端口>         dsh web 端口（默认 3080）
+  --proxy <url>         调用清理端点时使用的网络代理
+  -h, --help            显示帮助
+EOF
   exit 0
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --profile-dir) PROFILE_DIR="$2"; shift 2 ;;
-    --port) PORT="$2"; shift 2 ;;
-    --proxy) PROXY="$2"; shift 2 ;;
+    --profile-dir) require_value "$1" "${2:-}"; PROFILE_DIR="$2"; shift 2 ;;
+    --port) require_value "$1" "${2:-}"; PORT="$2"; shift 2 ;;
+    --proxy) require_value "$1" "${2:-}"; PROXY="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) die "未知参数: $1（--help 查看用法）" ;;
   esac
 done
 
-for bin in node pnpm curl; do
-  command -v "$bin" >/dev/null 2>&1 || die "缺少命令 $bin"
-done
+command -v node >/dev/null 2>&1 || die "缺少命令 node"
 
 if [ -n "$PROXY" ]; then
   export http_proxy="$PROXY" https_proxy="$PROXY"
+  export NO_PROXY="127.0.0.1,localhost"
   [ "${PROXY#socks}" != "$PROXY" ] && export all_proxy="$PROXY"
 fi
 
@@ -58,7 +67,7 @@ ENDPOINT="http://127.0.0.1:$PORT/vision-opencode"
 
 # ---- 1. dsh 运行时：插件自清理（还原 modelOverrides，最安全）----
 CLEANED_BY_ENDPOINT=0
-if curl -fsS --max-time 3 "$ENDPOINT/config" >/dev/null 2>&1; then
+if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 3 "$ENDPOINT/config" >/dev/null 2>&1; then
   info "dsh 正在运行，调用插件自清理端点 POST $ENDPOINT/uninstall"
   if RESULT=$(curl -fsS --max-time 30 -X POST -H 'x-vision-opencode-action: uninstall' "$ENDPOINT/uninstall" 2>/dev/null); then
     echo "$RESULT"
@@ -68,6 +77,9 @@ if curl -fsS --max-time 3 "$ENDPOINT/config" >/dev/null 2>&1; then
     echo "⚠ 自清理端点调用失败（插件可能还是旧版本，没有 /uninstall 端点）；继续本地清理，但 llm-pi-ai.modelOverrides 需要手动处理（见末尾提示）"
   fi
 else
+  if ! command -v curl >/dev/null 2>&1; then
+    info "未找到 curl，跳过运行时自清理端点"
+  fi
   cat <<EOF
 ⚠ dsh 未运行（或 web 端口不对）：跳过插件自清理。
   如果 settings.yaml 的 llm-pi-ai.providers.*.modelOverrides 里有本插件添加的条目
@@ -158,9 +170,12 @@ fi
 # ---- 4. 移除依赖（幂等：已移除时容错）----
 if [ -f "$PROFILE_DIR/package.json" ]; then
   cd "$PROFILE_DIR"
-  if grep -q '"dsh-vision-opencode"' package.json; then
-    info "移除依赖: pnpm remove dsh-vision-opencode"
-    pnpm remove dsh-vision-opencode || die "pnpm remove 失败；可手动编辑 package.json 删除依赖行"
+  if grep -q '"dsh-vision-opencode"[[:space:]]*:' package.json; then
+    command -v pnpm >/dev/null 2>&1 || die "缺少命令 pnpm（package.json 仍包含 dsh-vision-opencode）"
+    PNPM_WORKSPACE_ARGS=()
+    [ -f pnpm-workspace.yaml ] && PNPM_WORKSPACE_ARGS=(-w)
+    info "移除依赖: pnpm remove ${PNPM_WORKSPACE_ARGS[*]} dsh-vision-opencode"
+    pnpm remove "${PNPM_WORKSPACE_ARGS[@]}" dsh-vision-opencode || die "pnpm remove 失败；可手动编辑 package.json 删除依赖行"
   else
     info "依赖已不存在，跳过 pnpm remove"
   fi

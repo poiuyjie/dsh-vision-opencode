@@ -18,14 +18,21 @@ A plugin for DeepSeek Harness (DSH) that adds a **configurable vision model** al
 
 - A "vision model" dropdown next to the input box (auto-lists every image-capable model across providers)
 - A runtime `vision-image-analysis` skill that guides the main model to call `vision_read_image` for OCR, charts, screenshots, and scenes; it gracefully falls back to tool and prompt guidance when DSH's skill service is absent
-- **Auto-conversion** for chat attachments, with native DSH `notice` context injections showing in-progress, completed, failed, and cache-reuse states
+- **Auto-conversion** for chat attachments, with ephemeral progress beside the composer and one native DSH `notice` retained only when analysis completes or fails
 - Exact route scoping: only configured `mainProvider/mainModels` routes are intercepted; other providers and natively multimodal main models retain DSH's native image handling
 - Fault tolerance: 60s per-call timeout, one automatic retry for retriable failures, and a graceful placeholder-text fallback when retries are exhausted (the main model still answers and tells the user)
 - Auto-whitelists the image-submission gate (`modelOverrides`), records prior values privately, and restores only plugin-owned fields that users have not changed since
 
 ## Supported Systems
 
-Tested and verified on **Ubuntu 24.04**. Other systems (macOS, other distros, ...) should be compatible in theory but are unverified; if you hit issues, clone the repo and let an AI tweak it for you:
+Native installers are provided for both supported environments:
+
+- **Ubuntu 24.04 / Bash**: `scripts/install.sh` and `scripts/uninstall.sh` (locally tested).
+- **Windows 10/11 / PowerShell 5.1+**: `scripts/install.ps1` and `scripts/uninstall.ps1` (Git Bash and WSL are not required).
+
+Both variants implement the same configuration merge, Cordis registration, idempotent update, and uninstall cleanup behavior. macOS and other distributions remain unverified.
+
+### Ubuntu
 
 ```bash
 git clone https://github.com/poiuyjie/dsh-vision-opencode
@@ -48,9 +55,24 @@ curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/s
 curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.sh | bash
 ```
 
-- `--vision-provider` / `--vision-model` are optional: pass them only to pin a specific vision model; otherwise pick one after install from the "识图模型" dropdown next to the input box (auto-lists image-capable models across all your providers).
-- Only pass `--proxy` if your network needs it to reach GitHub/npm.
-- `--main-provider` / `--main-model` describe your text main model and are used to auto-whitelist the image-submission gate; omit them and configure manually instead (see below).
+### Windows PowerShell
+
+```powershell
+# Install; -MainModel accepts one or more text-only main models
+$install = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.ps1'
+& ([scriptblock]::Create($install)) `
+  -MainProvider 'opencode-go' `
+  -MainModel @('deepseek-v4-pro', 'deepseek-v4-flash')
+
+# Uninstall while dsh web is running to restore plugin-owned modelOverrides
+$uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.ps1'
+& ([scriptblock]::Create($uninstall))
+```
+
+- Bash uses `--vision-provider` / `--vision-model` and `--main-provider` / `--main-model`; PowerShell uses `-VisionProvider` / `-VisionModel` and `-MainProvider` / `-MainModel`.
+- Vision-model arguments are optional; omit them and select a model from the composer dropdown after installation.
+- Pass `--proxy` (Bash) or `-Proxy` (PowerShell) only when GitHub/npm access requires it.
+- Main-model arguments auto-whitelist the image-submission gate; omit them and configure it manually instead (see below).
 - The scripts only touch: the profile's `package.json` dependency, the `cordis.patch.yml` registration entry, and the `vision-opencode` section in `settings.yaml`. Re-running the installer updates the GitHub dependency while preserving configuration idempotently. Uninstall prefers calling the plugin's own `/vision-opencode/uninstall` endpoint to restore `modelOverrides`; if dsh isn't running it degrades to a warning plus manual instructions.
 
 ## Manual Install
@@ -102,7 +124,7 @@ vision-opencode:
 
 Restart `dsh`. A "vision model" dropdown appears next to the input box — it auto-lists every image-capable model across your providers; it shows a 「识图模型」 placeholder until you pick one, and your pick is written back into settings.
 
-Chat attachments and workspace images use complementary paths. Attachments must be converted before a text-only main request is sent, so their progress appears as a visible `vision-opencode` context injection. For a later workspace path, screenshot, chart, or OCR task, the model can load the `vision-image-analysis` skill and call `vision_read_image`. Both paths use any multimodal provider/model selected in the dropdown; OpenCode Go is not required.
+Chat attachments and workspace images use complementary paths. Attachments must be converted before a text-only main request is sent, so progress appears temporarily beside the composer and only one final `vision-opencode` context record remains. For a later workspace path, screenshot, chart, or OCR task, the model can load the `vision-image-analysis` skill, call `vision_read_image`, and show its native tool card. Both paths use any multimodal provider/model selected in the dropdown; OpenCode Go is not required.
 
 `autoConvert` applies only when both `mainProvider` and a `mainModels` entry match. Configuring `opencode-go/deepseek-v4-flash`, for example, does not intercept the same model id under another provider, and switching to a native multimodal main model preserves its native image path.
 

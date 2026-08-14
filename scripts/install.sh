@@ -33,35 +33,52 @@ AUTO_CONVERT="true"
 AUTO_CONVERT_OVERRIDDEN=""
 GATE_STATE=""
 PROXY=""
+VISION_PROVIDER_SET=0
+VISION_MODEL_SET=0
+
+require_value() {
+  [ "$#" -ge 2 ] && [ -n "${2:-}" ] || die "$1 需要一个非空值"
+}
 
 die() { echo "✗ $*" >&2; exit 1; }
 info() { echo "→ $*"; }
 
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  cat <<'EOF'
+用法：install.sh [选项]
+  --profile-dir <路径>        dsh profile 目录（默认 $DSH_HOME/profiles/web）
+  --vision-provider <名称>    识图模型供应商路由（需与 --vision-model 同时提供）
+  --vision-model <id>         识图模型 id（需与 --vision-provider 同时提供）
+  --main-provider <名称>      主模型供应商路由
+  --main-model <id>           纯文本主模型 id（可重复）
+  --no-auto-convert           关闭发图自动转换
+  --proxy <url>               安装过程中使用的网络代理
+  -h, --help                  显示帮助
+EOF
   exit 0
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --profile-dir) PROFILE_DIR="$2"; shift 2 ;;
-    --vision-provider) VISION_PROVIDER="$2"; shift 2 ;;
-    --vision-model) VISION_MODEL="$2"; shift 2 ;;
-    --main-provider) MAIN_PROVIDER="$2"; shift 2 ;;
-    --main-model) MAIN_MODELS+=("$2"); shift 2 ;;
+    --profile-dir) require_value "$1" "${2:-}"; PROFILE_DIR="$2"; shift 2 ;;
+    --vision-provider) require_value "$1" "${2:-}"; VISION_PROVIDER="$2"; VISION_PROVIDER_SET=1; shift 2 ;;
+    --vision-model) require_value "$1" "${2:-}"; VISION_MODEL="$2"; VISION_MODEL_SET=1; shift 2 ;;
+    --main-provider) require_value "$1" "${2:-}"; MAIN_PROVIDER="$2"; shift 2 ;;
+    --main-model) require_value "$1" "${2:-}"; MAIN_MODELS+=("$2"); shift 2 ;;
     --no-auto-convert) AUTO_CONVERT="false"; AUTO_CONVERT_OVERRIDDEN="1"; shift ;;
-    --proxy) PROXY="$2"; shift 2 ;;
+    --proxy) require_value "$1" "${2:-}"; PROXY="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) die "未知参数: $1（--help 查看用法）" ;;
   esac
 done
 
-for bin in node pnpm curl; do
+for bin in node pnpm; do
   command -v "$bin" >/dev/null 2>&1 || die "缺少命令 $bin（node/pnpm 是 DSH 的依赖，请先安装）"
 done
 
 if [ -n "$PROXY" ]; then
   export http_proxy="$PROXY" https_proxy="$PROXY"
+  export NO_PROXY="127.0.0.1,localhost"
   [ "${PROXY#socks}" != "$PROXY" ] && export all_proxy="$PROXY"
 fi
 
@@ -74,7 +91,7 @@ PNPM_WORKSPACE_ARGS=()
 if [ -f pnpm-workspace.yaml ]; then
   PNPM_WORKSPACE_ARGS=(-w)
 fi
-if grep -q '"dsh-vision-opencode"' package.json; then
+if grep -q '"dsh-vision-opencode"[[:space:]]*:' package.json; then
   # GitHub branch 依赖会被锁到具体 commit；必须显式 update 才能取得新版本。
   info "依赖已存在，升级到仓库最新版本"
   pnpm update "${PNPM_WORKSPACE_ARGS[@]}" dsh-vision-opencode
@@ -94,7 +111,7 @@ if grep -Eq '^\s*\[\s*\]\s*$' cordis.patch.yml; then
   sed -i '/^\s*\[\s*\]\s*$/d' cordis.patch.yml
   info "已移除 cordis.patch.yml 的空数组占位"
 fi
-if grep -q 'id: vision-opencode' cordis.patch.yml; then
+if grep -Eq '^[[:space:]]*- id: vision-opencode[[:space:]]*$' cordis.patch.yml; then
   info "cordis.patch.yml 条目已存在，跳过"
 else
   info "向 cordis.patch.yml 追加注册条目"
@@ -114,6 +131,7 @@ extract_key() {
     in_sec && $0 ~ "^  " k ":" {
       v = substr($0, index($0, ":") + 1); gsub(/^[ \t]+|[ \t]+$/, "", v);
       if (v == "''" || v == "\"\"") v = "";
+      if (length(v) >= 2 && ((substr(v, 1, 1) == "'" && substr(v, length(v), 1) == "'") || (substr(v, 1, 1) == "\"" && substr(v, length(v), 1) == "\""))) v = substr(v, 2, length(v) - 2);
       print v; exit
     }
   ' "$SETTINGS_FILE" 2>/dev/null || true
@@ -124,10 +142,18 @@ extract_list() {
     $0 ~ /^vision-opencode:/ { in_sec=1; next }
     in_sec && /^[^ ]/ { exit }
     in_sec && /^[ ]+mainModels:/ { in_list=1; next }
-    in_list && /^[ ]+- / { line=$0; sub(/^[ ]+- /, "", line); print line; next }
+    in_list && /^[ ]+- / {
+      line=$0; sub(/^[ ]+- /, "", line);
+      if (length(line) >= 2 && ((substr(line, 1, 1) == "'" && substr(line, length(line), 1) == "'") || (substr(line, 1, 1) == "\"" && substr(line, length(line), 1) == "\""))) line = substr(line, 2, length(line) - 2);
+      print line; next
+    }
     in_list && /^[ ]/ { next }
     in_list { exit }
   ' "$SETTINGS_FILE" 2>/dev/null || true
+}
+
+yaml_quote() {
+  node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"
 }
 
 if [ -f "$SETTINGS_FILE" ] && grep -q '^vision-opencode:' "$SETTINGS_FILE"; then
@@ -146,24 +172,38 @@ if [ -f "$SETTINGS_FILE" ] && grep -q '^vision-opencode:' "$SETTINGS_FILE"; then
   GATE_STATE="$(extract_key gateState)"
 fi
 
+if [ -z "$VISION_PROVIDER" ] || [ -z "$VISION_MODEL" ]; then
+  if [ "$VISION_PROVIDER_SET" = "1" ] || [ "$VISION_MODEL_SET" = "1" ]; then
+    die "--vision-provider 和 --vision-model 必须同时提供（或都不提供）"
+  fi
+fi
+if [ ${#MAIN_MODELS[@]} -gt 0 ] && [ -z "$MAIN_PROVIDER" ]; then
+  die "使用 --main-model 时必须提供 --main-provider（或让脚本从已有配置继承）"
+fi
+
+VISION_PROVIDER_YAML="$(yaml_quote "$VISION_PROVIDER")"
+VISION_MODEL_YAML="$(yaml_quote "$VISION_MODEL")"
+MAIN_PROVIDER_YAML="$(yaml_quote "$MAIN_PROVIDER")"
+
 SETTINGS_BLOCK="vision-opencode:"
 if [ -n "$VISION_PROVIDER" ] && [ -n "$VISION_MODEL" ]; then
   SETTINGS_BLOCK="$SETTINGS_BLOCK
-  provider: $VISION_PROVIDER
-  model: $VISION_MODEL"
+  provider: $VISION_PROVIDER_YAML
+  model: $VISION_MODEL_YAML"
 fi
 SETTINGS_BLOCK="$SETTINGS_BLOCK
   autoConvert: $AUTO_CONVERT"
 if [ -n "$MAIN_PROVIDER" ]; then
   SETTINGS_BLOCK="$SETTINGS_BLOCK
-  mainProvider: $MAIN_PROVIDER"
+  mainProvider: $MAIN_PROVIDER_YAML"
 fi
 if [ ${#MAIN_MODELS[@]} -gt 0 ]; then
   SETTINGS_BLOCK="$SETTINGS_BLOCK
   mainModels:"
   for m in "${MAIN_MODELS[@]}"; do
+    m_yaml="$(yaml_quote "$m")"
     SETTINGS_BLOCK="$SETTINGS_BLOCK
-    - $m"
+    - $m_yaml"
   done
 fi
 if [ -n "$GATE_STATE" ]; then

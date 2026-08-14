@@ -30,12 +30,17 @@ window.__ModuleLoader__.load({
 			var setCurrent = currentState[1];
 			var statusState = useState("loading");
 			var status = statusState[0];
-			var setStatus = statusState[1];
+				var setStatus = statusState[1];
+				var progressState = useState(null);
+				var progress = progressState[0];
+				var setProgress = progressState[1];
 
-			useEffect(function() {
-				var cancelled = false;
-				var attempts = 0;
-				setStatus("loading");
+				useEffect(function() {
+					var cancelled = false;
+					var attempts = 0;
+					var clearProgressTimer = null;
+					var progressStream = null;
+					setStatus("loading");
 				fetch("/vision-opencode/config", { headers: { accept: "application/json" } })
 					.then(function(resp) { return resp.json(); })
 					.then(function(cfg) {
@@ -68,10 +73,33 @@ window.__ModuleLoader__.load({
 								setStatus("error");
 							}
 						});
-				};
-				loadModels();
-				return function() { cancelled = true; };
-			}, [sessionId]);
+					};
+					loadModels();
+
+					// 自动附件转换的临时进度：只存在于输入区，不写入聊天上下文。
+					if (typeof sessionId === "string" && sessionId.length > 0 && typeof EventSource === "function") {
+						progressStream = new EventSource("/vision-opencode/events?sessionId=" + encodeURIComponent(sessionId));
+						progressStream.onmessage = function(event) {
+							if (cancelled) return;
+							try {
+								var next = JSON.parse(event.data);
+								if (next === null || typeof next !== "object" || typeof next.state !== "string" || typeof next.text !== "string") return;
+								if (clearProgressTimer !== null) clearTimeout(clearProgressTimer);
+								setProgress(next);
+								if (next.state !== "running") {
+									clearProgressTimer = setTimeout(function() {
+										if (!cancelled) setProgress(null);
+									}, 4500);
+								}
+							} catch (_error) {}
+						};
+					}
+					return function() {
+						cancelled = true;
+						if (clearProgressTimer !== null) clearTimeout(clearProgressTimer);
+						if (progressStream !== null) progressStream.close();
+					};
+				}, [sessionId]);
 
 			var currentValue = current !== null && typeof current.provider === "string" && current.provider.length > 0 ? current.provider + "/" + current.model : "";
 
@@ -116,8 +144,9 @@ window.__ModuleLoader__.load({
 			if (currentValue && !hasCurrent) options.unshift({ value: currentValue, label: currentValue });
 
 			var placeholder = status === "loading" ? "识图模型…" : (options.length === 0 ? "无识图模型" : "识图模型");
-			var selectStyle = {
-				maxWidth: "170px",
+				var selectStyle = {
+					width: "clamp(92px, 24vw, 170px)",
+					maxWidth: "170px",
 				fontSize: "12px",
 				padding: "2px 6px",
 				borderRadius: "6px",
@@ -128,25 +157,51 @@ window.__ModuleLoader__.load({
 			};
 			var children = [];
 			children.push(createElement("option", { key: "__placeholder__", value: "" }, placeholder));
-			for (var i = 0; i < options.length; i++) {
-				children.push(createElement("option", { key: options[i].value, value: options[i].value }, options[i].label));
-			}
-			return createElement(
+				for (var i = 0; i < options.length; i++) {
+					children.push(createElement("option", { key: options[i].value, value: options[i].value }, options[i].label));
+				}
+				var progressLabel = "";
+				var progressColor = "inherit";
+				if (progress !== null) {
+					if (progress.state === "running") progressLabel = "识图中...";
+					else if (progress.state === "done") { progressLabel = "识图完成"; progressColor = "#16803a"; }
+					else if (progress.state === "cancelled") progressLabel = "已取消";
+					else { progressLabel = "识图失败"; progressColor = "#c43d3d"; }
+				}
+				return createElement(
 				"span",
 				{
 					className: "vision-opencode-select",
 					title: "识图模型：vision_read_image 看图时使用的模型",
-					style: { display: "inline-flex", alignItems: "center", gap: "4px", marginRight: "6px", fontSize: "12px", color: "inherit", opacity: "0.9" }
+						style: { position: "relative", display: "inline-flex", alignItems: "center", marginRight: "6px", fontSize: "12px", color: "inherit", opacity: "0.9" }
 				},
-				createElement("select", {
+					createElement("select", {
 					id: "vision-opencode-model",
 					value: currentValue,
 					onChange: onChange,
 					disabled: status === "loading" || options.length === 0,
 					style: selectStyle,
 					"aria-label": "识图模型"
-				}, children)
-			);
+					}, children),
+					createElement("span", {
+						"aria-live": "polite",
+						title: progress !== null ? progress.text : "",
+						style: {
+							display: "inline-block",
+							position: "absolute",
+							right: "0",
+							bottom: "calc(100% + 6px)",
+							width: "clamp(92px, 24vw, 170px)",
+							overflow: "hidden",
+							textOverflow: "ellipsis",
+							whiteSpace: "nowrap",
+							textAlign: "right",
+							pointerEvents: "none",
+							color: progressColor,
+							opacity: progress === null ? "0" : "0.9"
+						}
+					}, progressLabel)
+				);
 		};
 
 		exports.inject = ["slots"];

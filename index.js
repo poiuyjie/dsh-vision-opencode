@@ -25,6 +25,7 @@ import {
   PLUGIN_IMAGE_INPUT,
   activateGateClaims,
   countImages,
+  countUniqueImages,
   isManagedMainRoute,
   planGateOverrides,
   replaceImagesWithText,
@@ -164,58 +165,90 @@ export function apply(ctx, entry) {
     return `read_image is blocked for the configured text-only main model (${provider}/${model}): a real image block would make the provider reject the request. Load the vision-image-analysis skill when available, then use vision_read_image to receive a text analysis.`;
   });
 
-  // ---- 会话内可见的活动指示：正在调用识图模型 → 完成耗时 ----
-  // 发图自动转换发生在主模型流式回复之前，UI 上此前没有任何活动指示，
-  // 用户容易误以为卡住。这里在会话表面追加一条可见状态消息（追加即显示），
-  // 完成后用 replace 替换成带耗时的完成行；主模型只会看到最终一行。
-  const visionStatusMessage = (text) => createUserMessage({
+  // ---- 混合进度展示：临时 SSE 状态 + 最终原生 notice ----
+  // “正在识图”只通过前端临时状态展示，不写入 session；结束后追加一条简短
+  // notice 作为结果记录。这样等待过程可见，但不会留下永久的 running 消息。
+  const progressClients = new Map();
+  function emitVisionProgress(sessionId, payload) {
+    if (sessionId === void 0) return;
+    const clients = progressClients.get(sessionId);
+    if (clients === void 0) return;
+    const frame = `data: ${JSON.stringify(payload)}\n\n`;
+    for (const res of [...clients]) {
+      try {
+        res.write(frame);
+      } catch {
+        clients.delete(res);
+      }
+    }
+    if (clients.size === 0) progressClients.delete(sessionId);
+  }
+  const visionStatusMessage = (text, summary) => createUserMessage({
     content: [{ type: 'text', text }],
     source: {
       kind: 'plugin',
       plugin: 'vision-opencode',
       form: 'notice',
-      summary: text.length <= 120 ? text : `${text.slice(0, 119)}…`,
+      summary,
     },
   });
   /**
-   * 在请求所属会话里追加"正在分析图片"状态行，返回一个结束函数：
-   * 调用它（可带错误信息）会把状态行替换为带耗时的完成/失败行。
+   * 向请求所属会话发送临时进度，返回一个结束函数；结束时向 session
+   * 追加最终 notice。纯缓存命中只更新临时状态，不重复污染会话历史。
    * 任何一步失败都不影响主流程（展示只是辅助）。
    */
-  function appendVisionStatus(llmOptions, route, imageCount) {
+  function appendVisionStatus(llmOptions, route, imageCount, currentImageCount) {
     try {
       const sessionId = typeof llmOptions?.sessionId === 'string' ? llmOptions.sessionId : void 0;
       if (sessionId === void 0) return void 0;
       const session = ctx.get('sessions')?.get(sessionId);
-      if (session === void 0 || typeof session.append !== 'function') return void 0;
       const started = Date.now();
-      const event = session.append('user/message', visionStatusMessage(
-        `🔍 正在调用 ${route.provider}/${route.model} 分析 ${imageCount} 张图片…`,
-      ), { surfaceOp: 'append' });
+      const historicalImageCount = Math.max(0, imageCount - currentImageCount);
+      const runningText = currentImageCount > 0
+        ? `正在调用 ${route.provider}/${route.model} 分析本轮 ${currentImageCount} 张图片${historicalImageCount > 0 ? `，并整理 ${historicalImageCount} 张历史图片上下文` : ''}...`
+        : `正在调用 ${route.provider}/${route.model} 恢复 ${historicalImageCount} 张历史图片上下文...`;
+      emitVisionProgress(sessionId, {
+        state: 'running',
+        text: runningText,
+      });
       return ({ failures = 0, reused = 0, unexpectedError, cancelled = false } = {}) => {
         try {
           const seconds = ((Date.now() - started) / 1000).toFixed(1);
           let text;
+          let summary;
+          let state;
           if (cancelled) {
             text = `已取消图片分析（${seconds}s，${route.provider}/${route.model}）`;
+            summary = '图片分析已取消';
+            state = 'cancelled';
           } else if (unexpectedError !== void 0) {
             text = `⚠️ 图片分析异常（${seconds}s，${route.provider}/${route.model}）：${unexpectedError}`;
+            summary = '图片分析异常';
+            state = 'failed';
           } else if (failures > 0) {
             text = `⚠️ 图片分析完成但有 ${failures} 张失败（${seconds}s，${route.provider}/${route.model}）`;
+            summary = '图片分析部分失败';
+            state = 'failed';
           } else if (reused === imageCount) {
             text = `↩ 已复用 ${imageCount} 张图片的识别缓存（${seconds}s，${route.provider}/${route.model}）`;
+            summary = '已复用图片分析';
+            state = 'done';
           } else {
             const reusedText = reused > 0 ? `，其中 ${reused} 张复用缓存` : '';
-            text = `✅ 已完成 ${imageCount} 张图片分析（${seconds}s，${route.provider}/${route.model}${reusedText}）`;
+            const contextText = historicalImageCount > 0
+              ? `，同时处理 ${historicalImageCount} 张历史图片上下文`
+              : '';
+            text = currentImageCount > 0
+              ? `✅ 本轮 ${currentImageCount} 张图片分析完成（${seconds}s，${route.provider}/${route.model}${contextText}${reusedText}）`
+              : `✅ 已恢复 ${historicalImageCount} 张历史图片上下文（${seconds}s，${route.provider}/${route.model}${reusedText}）`;
+            summary = '图片分析完成';
+            state = 'done';
           }
-          session.append('user/message', visionStatusMessage(text), {
-            // surface 的替换操作符必须是 { op:'replace', start, end } 对象；
-            // 写成字符串 'replace' 会被 surface 校验拒绝（状态行将永远卡在"正在分析"）
-            surfaceOp: { op: 'replace', start: event.seq, end: event.seq },
-            sourceEventSeqs: [event.seq],
-          });
+          emitVisionProgress(sessionId, { state, text });
+          if (reused === imageCount || session === void 0 || typeof session.append !== 'function') return;
+          session.append('user/message', visionStatusMessage(text, summary), { surfaceOp: 'append' });
         } catch {
-          // 状态行更新失败不影响主流程
+          // 状态展示失败不影响主流程
         }
       };
     } catch {
@@ -527,7 +560,9 @@ export function apply(ctx, entry) {
       if (block.type === 'image') {
         const ref = block.attachment;
         const key = visionCacheKey(route, ref);
-        let analysis = key === void 0 ? void 0 : analysisCache.get(key);
+        const requestResult = key === void 0 ? void 0 : stats.requestResults.get(key);
+        let analysis = requestResult?.analysis
+          ?? (key === void 0 ? void 0 : analysisCache.get(key));
         if (analysis === void 0) {
           let ok = false;
           try {
@@ -545,11 +580,15 @@ export function apply(ctx, entry) {
             if (analysisCache.size >= 128) analysisCache.clear();
             analysisCache.set(key, analysis);
           }
+          if (key !== void 0) stats.requestResults.set(key, { analysis });
         } else {
           // 缓存命中：同一张图重复出现时直接复用结论，并明确标注
           // 未重复调用识图模型，避免用户误以为"识别了两次"
           analysis = `${analysis}\n（注：该图片与之前的图片相同，分析结论复用缓存，未重复调用识图模型）`;
-          stats.reused += 1;
+          if (requestResult === void 0) stats.reused += 1;
+          if (key !== void 0 && requestResult === void 0) {
+            stats.requestResults.set(key, { analysis: analysisCache.get(key) });
+          }
         }
         sink.push(analysis);
         continue;
@@ -575,9 +614,21 @@ export function apply(ctx, entry) {
     // 其他供应商、其他模型（尤其原生多模态主模型）完整保留 DSH 的原生图片链路。
     if (!managedRoute(llmOptions.provider, llmOptions.model)) return next();
     const messages = Array.isArray(llmOptions.messages) ? llmOptions.messages : [];
+    const seenAttachmentIds = new Set();
     const imageCount = messages.reduce((total, message) => total
-      + (Array.isArray(message?.content) ? countImages(message.content) : 0), 0);
+      + (Array.isArray(message?.content)
+        ? countUniqueImages(message.content, seenAttachmentIds)
+        : 0), 0);
     if (imageCount === 0) return next();
+    let currentImageCount = 0;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.source?.kind !== 'user') continue;
+      currentImageCount = Array.isArray(message.content)
+        ? countUniqueImages(message.content)
+        : 0;
+      break;
+    }
     if (!hasVisionModel(route)) {
       // 未配置识图模型：不能替用户假定任何模型。图片降级为指引文本，
       // 主模型照常完成回合并提示用户先去选择器里选一个识图模型。
@@ -606,8 +657,8 @@ export function apply(ctx, entry) {
     // 发出去，再把它的 chunk 转交给外层消费者。BYPASS 防止嵌套调用再次触发本监听器。
     return (async function* visionTextStream() {
       let converted;
-      const stats = { failures: 0, reused: 0 };
-      const finishStatus = appendVisionStatus(llmOptions, route, imageCount);
+      const stats = { failures: 0, reused: 0, requestResults: new Map() };
+      const finishStatus = appendVisionStatus(llmOptions, route, imageCount, currentImageCount);
       try {
         converted = [];
         for (const message of messages) {
@@ -667,6 +718,56 @@ export function apply(ctx, entry) {
   // 用 ctx.inject 条件挂载：webServer 服务就绪后才注册路由
   //（apply 时 webServer 可能尚未激活，ctx.get 会拿到 undefined）。
   ctx.inject(['webServer'], (wctx) => {
+    wctx.effect(() => {
+      const dispose = wctx.webServer.register({
+        kind: 'exact',
+        path: '/vision-opencode/events',
+        handler: async (req, res) => {
+          if (req.method !== 'GET') {
+            res.writeHead(405);
+            res.end();
+            return;
+          }
+          const url = new URL(req.url ?? '/vision-opencode/events', 'http://127.0.0.1');
+          const sessionId = url.searchParams.get('sessionId')?.trim() ?? '';
+          if (sessionId.length === 0 || sessionId.length > 256) {
+            json(res, 400, { error: 'a valid sessionId query parameter is required' });
+            return;
+          }
+          res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache, no-transform',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no',
+          });
+          res.write('retry: 2000\n\n');
+          const clients = progressClients.get(sessionId) ?? new Set();
+          clients.add(res);
+          progressClients.set(sessionId, clients);
+          const heartbeat = setInterval(() => {
+            try {
+              res.write(': keepalive\n\n');
+            } catch {
+              clearInterval(heartbeat);
+            }
+          }, 15_000);
+          const close = () => {
+            clearInterval(heartbeat);
+            clients.delete(res);
+            if (clients.size === 0) progressClients.delete(sessionId);
+          };
+          req.once('close', close);
+          res.once('close', close);
+        },
+      });
+      return () => {
+        dispose();
+        for (const clients of progressClients.values()) {
+          for (const res of clients) res.end();
+        }
+        progressClients.clear();
+      };
+    }, 'vision-opencode: progress events route');
     wctx.effect(() => wctx.webServer.register({
       kind: 'exact',
       path: '/vision-opencode/config',

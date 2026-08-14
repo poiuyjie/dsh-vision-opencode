@@ -18,14 +18,21 @@ DeepSeek Harness（DSH）插件：给纯文本主模型加一个**可配置的�
 
 - 输入框右侧「识图模型」下拉选择器（自动列出所有供应商中声明了图片输入的模型）
 - 运行时 skill `vision-image-analysis`：按需指导主模型调用 `vision_read_image` 做 OCR / 图表 / 场景理解；未启用 DSH skill 服务时自动退化为工具与系统提示词
-- 用户在聊天里发图片时**自动转换**，并以 DSH 原生 `notice` 上下文注入展示“正在识图 / 完成 / 失败 / 缓存复用”过程
+- 用户在聊天里发图片时**自动转换**：输入区实时显示临时识图进度，结束后只用 DSH 原生 `notice` 留下一条完成或失败记录
 - 只接管 `mainProvider/mainModels` 明确配置的完整路由；其他供应商和原生多模态主模型保持 DSH 原生图片能力
 - 异常兜底：单次调用 60s 超时、可重试失败自动重试 1 次、重试耗尽降级为占位文本（主模型照常回复并告知用户）
 - 自动放行图片提交闸门（`modelOverrides`），隐藏记录修改前的值，卸载时只还原插件拥有且未被用户改写的字段
 
 ## 系统支持
 
-本机在 **Ubuntu 24.04** 上安装、测试通过。其他系统（macOS / 其他发行版等）理论兼容，但未验证；如果遇到问题，可以 git clone 下来让 AI 帮你修改调整：
+支持以下两套原生安装脚本：
+
+- **Ubuntu 24.04 / Bash**：`scripts/install.sh`、`scripts/uninstall.sh`（本机实测）。
+- **Windows 10/11 / PowerShell 5.1+**：`scripts/install.ps1`、`scripts/uninstall.ps1`（不要求 Git Bash 或 WSL）。
+
+两套脚本执行相同的配置合并、Cordis 注册、幂等升级和卸载清理流程。macOS 与其他发行版尚未验证。
+
+### Ubuntu
 
 ```bash
 git clone https://github.com/poiuyjie/dsh-vision-opencode
@@ -47,9 +54,24 @@ curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/s
 curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.sh | bash
 ```
 
-- `--vision-provider` / `--vision-model` 可选：想固定识图模型才传；不传则装好后在输入框右侧「识图模型」下拉里选择（自动列出你所有供应商中支持图片输入的模型）。
-- `--proxy` 仅在安装包的网络环境需要时传；不需要代理就省略。
-- `--main-provider` / `--main-model` 是主模型信息，用于自动放行图片提交闸门；不传则需手动配置（见下）。
+### Windows PowerShell
+
+```powershell
+# 安装；-MainModel 接受一个或多个纯文本主模型
+$install = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.ps1'
+& ([scriptblock]::Create($install)) `
+  -MainProvider 'opencode-go' `
+  -MainModel @('deepseek-v4-pro', 'deepseek-v4-flash')
+
+# 卸载；在 dsh web 仍运行时执行，可以自动还原插件拥有的 modelOverrides
+$uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.ps1'
+& ([scriptblock]::Create($uninstall))
+```
+
+- Bash 使用 `--vision-provider` / `--vision-model`、`--main-provider` / `--main-model`；PowerShell 对应使用 `-VisionProvider` / `-VisionModel`、`-MainProvider` / `-MainModel`。
+- 识图模型参数可选：不传则装好后在输入框右侧「识图模型」下拉里选择。
+- 代理参数仅在访问 GitHub/npm 需要代理时传：Bash 为 `--proxy`，PowerShell 为 `-Proxy`。
+- 主模型参数用于自动放行图片提交闸门；不传则需手动配置（见下）。
 - 脚本只改动：profile 的 `package.json` 依赖、`cordis.patch.yml` 注册条目、`settings.yaml` 的 `vision-opencode` 段；重复运行时会升级 GitHub 依赖并保持配置幂等，卸载时优先调用插件自带的 `/vision-opencode/uninstall` 端点还原 `modelOverrides`，dsh 未运行时降级为警告并给出手动指引。
 
 ## 手动安装
@@ -101,7 +123,7 @@ vision-opencode:
 
 重启 `dsh`。重启后输入框右侧会出现「识图模型」下拉——它自动列出你所有供应商中声明了图片输入的模型；未选择时显示「识图模型」占位，选中即写入 settings。
 
-聊天附件和工作区图片走两条互补路径：聊天附件必须在纯文本主模型请求发出前自动转成文字，因此显示为可见的 `vision-opencode` 上下文注入；主模型后来需要读取文件路径、截图、图表或做 OCR 时，会加载 `vision-image-analysis` skill，再调用 `vision_read_image`。二者都使用你在下拉中选择的任意供应商多模态模型，不绑定 OpenCode Go。
+聊天附件和工作区图片走两条互补路径：聊天附件必须在纯文本主模型请求发出前自动转成文字，识图期间在输入区显示临时状态，结束后只保留一条 `vision-opencode` 上下文记录；主模型后来需要读取文件路径、截图、图表或做 OCR 时，会加载 `vision-image-analysis` skill，再调用 `vision_read_image` 并显示原生工具卡片。二者都使用你在下拉中选择的任意供应商多模态模型，不绑定 OpenCode Go。
 
 `autoConvert` 只对 `mainProvider` 与 `mainModels` 同时匹配的路由生效。例如只配置 `opencode-go/deepseek-v4-flash` 时，其他供应商下同名模型不会被拦截，切换到原生多模态主模型也会继续使用 DSH 自带的图片链路。
 

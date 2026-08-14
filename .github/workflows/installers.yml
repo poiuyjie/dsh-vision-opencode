@@ -1,0 +1,36 @@
+name: Installer compatibility
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test Bash installers
+        run: |
+          bash -n scripts/install.sh scripts/uninstall.sh scripts/selftest.sh
+          bash scripts/selftest.sh
+      - name: Test plugin core and package
+        run: |
+          node scripts/core-selftest.mjs
+          npm pack --dry-run
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test PowerShell installers
+        shell: powershell
+        run: .\scripts\selftest.ps1

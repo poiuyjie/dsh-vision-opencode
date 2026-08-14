@@ -3,6 +3,7 @@ import {
   PLUGIN_IMAGE_INPUT,
   activateGateClaims,
   countImages,
+  countUniqueImages,
   isManagedMainRoute,
   planGateOverrides,
   replaceImagesWithText,
@@ -24,6 +25,14 @@ const nested = [
   },
 ];
 assert.equal(countImages(nested), 2);
+assert.equal(countUniqueImages(nested), 2);
+const seenAttachmentIds = new Set();
+assert.equal(countUniqueImages(nested, seenAttachmentIds), 2);
+assert.equal(countUniqueImages([
+  { type: 'image', attachment: { attachmentId: 'top' } },
+  { type: 'image', attachment: {} },
+  { type: 'image', attachment: {} },
+], seenAttachmentIds), 2);
 const replaced = replaceImagesWithText(nested, '[removed]');
 assert.equal(replaced.replaced, 2);
 assert.equal(countImages(replaced.content), 0);

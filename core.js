@@ -121,6 +121,25 @@ export function countImages(blocks) {
   return count;
 }
 
+/** Count distinct attachments while treating images without an id as distinct. */
+export function countUniqueImages(blocks, seenAttachmentIds = new Set()) {
+  let count = 0;
+  for (const block of blocks) {
+    if (block?.type === 'image') {
+      const attachmentId = block.attachment?.attachmentId;
+      if (typeof attachmentId !== 'string' || attachmentId.length === 0) {
+        count += 1;
+      } else if (!seenAttachmentIds.has(attachmentId)) {
+        seenAttachmentIds.add(attachmentId);
+        count += 1;
+      }
+    } else if (block?.type === 'tool-result' && Array.isArray(block.content)) {
+      count += countUniqueImages(block.content, seenAttachmentIds);
+    }
+  }
+  return count;
+}
+
 /** Recursively replace every image, including images nested in tool results. */
 export function replaceImagesWithText(blocks, replacementText) {
   const content = [];
