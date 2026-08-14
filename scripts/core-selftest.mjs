@@ -39,6 +39,22 @@ assert.equal(nativeVisionRoutes.has('provider-a\0native-vision'), true);
 restoreImageAdmission();
 assert.equal(llmRuntime.resolveModelInfo, originalResolveModelInfo);
 
+// A route discovered as text-only is admitted even when it is not in the
+// legacy mainProvider/mainModels allow-list. Native vision remains untouched.
+const resolvedTextRoutes = new Set();
+const automaticRuntime = { resolveModelInfo: originalResolveModelInfo };
+const restoreAutomaticAdmission = installImageAdmissionOverride(
+  automaticRuntime,
+  (provider, model) => resolvedTextRoutes.has(`${provider}\0${model}`),
+  (provider, model, info) => {
+    if (info.inputModalities?.includes('image')) return;
+    resolvedTextRoutes.add(`${provider}\0${model}`);
+  },
+);
+assert.deepEqual((await automaticRuntime.resolveModelInfo('opencode-go', 'deepseek-v4-flash')).inputModalities, ['text', 'image']);
+assert.deepEqual((await automaticRuntime.resolveModelInfo('opencode-go', 'native-vision')).inputModalities, ['text', 'image']);
+restoreAutomaticAdmission();
+
 const nested = [
   { type: 'text', text: 'before' },
   { type: 'image', attachment: { attachmentId: 'top' } },

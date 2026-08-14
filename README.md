@@ -19,7 +19,7 @@ DeepSeek Harness（DSH）插件：给纯文本主模型加一个**可配置的�
 - 输入框右侧「识图模型」下拉选择器（自动列出所有供应商中声明了图片输入的模型）
 - 运行时 skill `vision-image-analysis`：按需指导主模型调用 `vision_read_image` 做 OCR / 图表 / 场景理解；未启用 DSH skill 服务时自动退化为工具与系统提示词
 - 用户在聊天里发图片时**自动转换**：输入区实时显示临时识图进度，结束后只用 DSH 原生 `notice` 留下一条完成或失败记录
-- 只接管 `mainProvider/mainModels` 明确配置的完整路由；其他供应商和原生多模态主模型保持 DSH 原生图片能力
+- 自动识别当前适配器目录中的纯文本主模型并接管图片转换；原生多模态主模型保持 DSH 原生图片能力，切换供应商或模型无需同步第二份配置
 - 异常兜底：单次调用 60s 超时、可重试失败自动重试 1 次、重试耗尽降级为占位文本（主模型照常回复并告知用户）
 - 通过进程内能力兼容层放行图片提交闸门，支持 pi-ai、`deepseek-official` 等不同适配器，不修改用户的模型目录
 
@@ -66,9 +66,9 @@ $uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-v
 
 > **重要：先备份图片会话。** 卸载后，包含图片的旧对话可能无法继续发送给纯文本主模型。请在卸载前把关键结论、图片描述、代码和待办事项复制或导出为 Markdown（`.md`）文件，再执行卸载；原始图片会话不会被插件自动转换。
 
-> 安装脚本不会选择或写入任何识图模型。若没有显式配置 `mainProvider/mainModels`，首次安装会自动从 `agent-default-model` 继承当前主模型，仅用于放行图片转换；需要代理时再追加 `--proxy` 或 `-Proxy`。
+> 安装脚本不会选择或写入识图模型，也不要求你填写主模型。插件启动后会根据 DSH 适配器返回的输入能力自动识别纯文本路由；需要代理时再追加 `--proxy` 或 `-Proxy`。
 >
-> `mainProvider/mainModels` 只用于指定要接管的纯文本主模型，不是识图模型；已有配置无需重复填写，没有配置时请按下方“配置”章节设置。
+> 旧版 `mainProvider/mainModels` 会继续兼容，但不再是必填项，也不需要随主模型切换手动同步。
 >
 > 卸载只处理非空 `gateState` 能证明属于插件的旧版闸门记录，不会扫描或修改用户及其他插件的图片模型配置。
 
@@ -113,19 +113,14 @@ vision-opencode:
   provider: ''              # 识图模型所在供应商路由；留空 = 未选择（选择器显示「识图模型」）
   model: ''                 # 识图模型 id；留空 = 未选择（在下拉里选中后自动写入）
   autoConvert: true         # 发图自动转换开关（稳定性逃生阀，出问题改 false）
-  mainProvider: opencode-go # 主模型所在供应商路由（支持 pi-ai 及 deepseek-official 等独立适配器）
-  mainModels:               # 纯文本主模型 id 列表（自动放行图片提交闸门）
-    - deepseek-v4-pro
-    - deepseek-v4-flash
+  # mainProvider/mainModels: 旧版兼容字段，可省略；插件会自动识别所有纯文本路由
 ```
 
 重启 `dsh`。重启后输入框右侧会出现「识图模型」下拉——它自动列出你所有供应商中声明了图片输入的模型；未选择时显示「识图模型」占位，选中即写入 settings。
 
 聊天附件和工作区图片走两条互补路径：聊天附件必须在纯文本主模型请求发出前自动转成文字，识图期间在输入区显示临时状态，结束后只保留一条 `vision-opencode` 上下文记录；主模型后来需要读取文件路径、截图、图表或做 OCR 时，会加载 `vision-image-analysis` skill，再调用 `vision_read_image` 并显示原生工具卡片。二者都使用你在下拉中选择的任意供应商多模态模型，不绑定 OpenCode Go。
 
-`autoConvert` 只对 `mainProvider` 与 `mainModels` 同时匹配的路由生效。例如只配置 `opencode-go/deepseek-v4-flash` 时，其他供应商下同名模型不会被拦截，切换到原生多模态主模型也会继续使用 DSH 自带的图片链路。
-
-> `mainProvider`/`mainModels` 可留空：此时插件不会接管任何主路由，向纯文本主模型发送图片仍会被 DSH 内置闸门拒绝。通常让安装脚本从 `agent-default-model` 自动继承即可；需要接管多个文本模型时再手动补充列表。
+`autoConvert` 对所有被 DSH 解析为纯文本输入的主模型生效。切换到另一个供应商或模型后，插件会在首次请求时重新读取其能力；原生支持图片的模型不会被转换。
 
 <details>
 <summary>高级：手动卸载</summary>
@@ -165,7 +160,7 @@ pnpm remove dsh-vision-opencode
 | 单次调用挂起 | 每次尝试独立 60s 超时 |
 | 用户取消回合 | 直接终止，不做无意义降级 |
 | 插件自身意外 bug | 最后一道保险：图片全部降级为占位文本，不杀死回合 |
-| 切换到未列入 `mainModels` 的模型 | 插件不拦截，完整保留该模型的原生图片处理 |
+| 切换到其他供应商或模型 | 自动读取其输入能力；纯文本模型转换图片，原生多模态模型保留 DSH 原链路 |
 
 ## 回退 / 逃生阀
 

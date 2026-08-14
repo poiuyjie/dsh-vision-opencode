@@ -19,7 +19,7 @@ A plugin for DeepSeek Harness (DSH) that adds a **configurable vision model** al
 - A "vision model" dropdown next to the input box (auto-lists every image-capable model across providers)
 - A runtime `vision-image-analysis` skill that guides the main model to call `vision_read_image` for OCR, charts, screenshots, and scenes; it gracefully falls back to tool and prompt guidance when DSH's skill service is absent
 - **Auto-conversion** for chat attachments, with ephemeral progress beside the composer and one native DSH `notice` retained only when analysis completes or fails
-- Exact route scoping: only configured `mainProvider/mainModels` routes are intercepted; other providers and natively multimodal main models retain DSH's native image handling
+- Automatically detects text-only routes from each adapter's catalog; native multimodal main models retain DSH's native image handling, with no second route list to keep in sync
 - Fault tolerance: 60s per-call timeout, one automatic retry for retriable failures, and a graceful placeholder-text fallback when retries are exhausted (the main model still answers and tells the user)
 - Admits image submission through an in-process capability layer across pi-ai, `deepseek-official`, and other adapters without modifying the user's model catalog
 
@@ -66,9 +66,9 @@ $uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-v
 
 > **Important: back up image conversations first.** After uninstalling, old conversations that contain images may no longer be usable with a text-only main model. Before uninstalling, copy or export key conclusions, image descriptions, code, and TODOs to a Markdown (`.md`) file. The plugin does not automatically convert or rewrite the original image history.
 
-> The installer never selects or writes a vision model. If `mainProvider/mainModels` are not configured, the first install inherits the current `agent-default-model` as the main route only to allow image conversion. Add `--proxy` or `-Proxy` only when needed.
+> The installer never selects or writes a vision model, and no main-model route is required. At runtime the plugin reads each adapter's declared input capability and converts only text-only routes. Add `--proxy` or `-Proxy` only when needed.
 >
-> `mainProvider/mainModels` only define which text-only main route to intercept; they are not vision-model selection. Keep existing settings, or configure them in the section below if needed.
+> Existing `mainProvider/mainModels` values remain compatible as legacy hints, but they no longer need to be updated when you switch models.
 >
 > Uninstall only handles legacy gate entries proven by a non-empty `gateState`; it never scans or changes image-model settings owned by users or other plugins.
 
@@ -113,19 +113,14 @@ vision-opencode:
   provider: ''              # provider route for the vision model; empty = not chosen (selector shows 「识图模型」)
   model: ''                 # vision model id; empty = not chosen (written back once you pick from the dropdown)
   autoConvert: true         # auto-convert toggle (stability escape hatch; set false if problems)
-  mainProvider: opencode-go # main-model provider route (pi-ai and independent adapters such as deepseek-official are supported)
-  mainModels:               # text-only main model ids (auto-whitelist the image gate)
-    - deepseek-v4-pro
-    - deepseek-v4-flash
+  # mainProvider/mainModels: legacy compatibility fields; optional
 ```
 
 Restart `dsh`. A "vision model" dropdown appears next to the input box — it auto-lists every image-capable model across your providers; it shows a 「识图模型」 placeholder until you pick one, and your pick is written back into settings.
 
 Chat attachments and workspace images use complementary paths. Attachments must be converted before a text-only main request is sent, so progress appears temporarily beside the composer and only one final `vision-opencode` context record remains. For a later workspace path, screenshot, chart, or OCR task, the model can load the `vision-image-analysis` skill, call `vision_read_image`, and show its native tool card. Both paths use any multimodal provider/model selected in the dropdown; OpenCode Go is not required.
 
-`autoConvert` applies only when both `mainProvider` and a `mainModels` entry match. Configuring `opencode-go/deepseek-v4-flash`, for example, does not intercept the same model id under another provider, and switching to a native multimodal main model preserves its native image path.
-
-> `mainProvider`/`mainModels` may be left empty: the plugin then intercepts no main route, so DSH's built-in gate still rejects images sent to a text-only model. Normally the installer inherits `agent-default-model`; edit the list only when several text models should be intercepted.
+`autoConvert` applies to every route that DSH declares as text-only. The plugin re-reads capabilities after a provider/model switch; native multimodal routes retain their original image path.
 
 <details>
 <summary>Advanced: manual uninstall</summary>
@@ -165,7 +160,7 @@ A plugin load failure won't take DSH down: the cordis loader isolates per entry 
 | A single call hangs | Independent 60s timeout per attempt |
 | User cancels the turn | Abort immediately; no pointless fallback |
 | Unexpected plugin bug | Last resort: all images degrade to placeholder text; the turn is never killed |
-| Main model is not listed in `mainModels` | No interception; native image handling remains intact |
+| Provider or model is switched | Reads the new route capability automatically and preserves native multimodal handling |
 
 ## Rollback / Escape Hatch
 

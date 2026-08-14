@@ -117,20 +117,6 @@ extract_list() {
   ' "$SETTINGS_FILE" 2>/dev/null || true
 }
 
-extract_default_model_key() {
-  # 从 dsh 的默认主模型段读取 provider/model，避免安装时要求用户选择识图模型。
-  awk -v k="$1" '
-    /^agent-default-model:/ { inside=1; next }
-    inside && /^[^ ]/ { exit }
-    inside && $0 ~ "^  " k ":" {
-      v = substr($0, index($0, ":") + 1); gsub(/^[ \t]+|[ \t]+$/, "", v);
-      if (v == "''" || v == "\"\"") v = "";
-      if (length(v) >= 2 && ((substr(v, 1, 1) == "'" && substr(v, length(v), 1) == "'") || (substr(v, 1, 1) == "\"" && substr(v, length(v), 1) == "\""))) v = substr(v, 2, length(v) - 2);
-      print v; exit
-    }
-  ' "$SETTINGS_FILE" 2>/dev/null || true
-}
-
 yaml_quote() {
   node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"
 }
@@ -154,16 +140,6 @@ fi
 if [ -z "$VISION_PROVIDER" ] || [ -z "$VISION_MODEL" ]; then
   if [ "$VISION_PROVIDER_SET" = "1" ] || [ "$VISION_MODEL_SET" = "1" ]; then
     die "--vision-provider 和 --vision-model 必须同时提供（或都不提供）"
-  fi
-fi
-if [ -z "$MAIN_PROVIDER" ] && [ ${#MAIN_MODELS[@]} -eq 0 ] && [ -z "$GATE_STATE" ] && [ -f "$SETTINGS_FILE" ]; then
-  MAIN_PROVIDER="$(extract_default_model_key provider)"
-  DEFAULT_MODEL="$(extract_default_model_key model)"
-  if [ -n "$MAIN_PROVIDER" ] && [ -n "$DEFAULT_MODEL" ]; then
-    MAIN_MODELS=("$DEFAULT_MODEL")
-    info "未指定主路由，已从 agent-default-model 自动接管 $MAIN_PROVIDER/$DEFAULT_MODEL"
-  else
-    MAIN_PROVIDER=""
   fi
 fi
 if [ ${#MAIN_MODELS[@]} -gt 0 ] && [ -z "$MAIN_PROVIDER" ]; then

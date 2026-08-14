@@ -7,7 +7,7 @@
 // 2. 注册 settings namespace `vision-opencode`：
 //      provider/model 识图模型路由
 //      autoConvert      llm/stream 瀑布开关（发图自动转换的稳定性逃生阀）
-//      mainProvider/mainModels  由运行时兼容层放行并转换的纯文本主模型 id
+//      mainProvider/mainModels  旧版/手动指定的兼容路由（现在也会自动识别所有纯文本路由）
 // 3. llm/stream 瀑布：含图请求先由识图模型分析成文本再交给主模型；
 //    超时+重试+降级占位，识图不可用不影响主模型回合。
 // 4. web 模式注册 HTTP 端点：
@@ -57,9 +57,9 @@ const Config = z.object({
   model: z.string().default(''),
   /** llm/stream 瀑布开关：false 时停用「发图自动转换」，只保留工具与选择器（稳定性逃生阀）。 */
   autoConvert: z.boolean().default(true),
-  /** 主模型所在供应商路由。空 = 不接管图片提交。 */
+  /** 旧版/手动兼容路由；当前版本通常由适配器能力自动识别。 */
   mainProvider: z.string().default(''),
-  /** 需要由识图模型转换图片的纯文本主模型 id 列表。 */
+  /** 旧版/手动兼容模型列表；无需随当前主模型切换同步。 */
   mainModels: z.array(z.string()).default([]),
   /** 旧版本修改 modelOverrides 前保存的 input；仅用于升级/卸载时精确恢复。 */
   gateState: z.string().default('').hidden(),
@@ -129,15 +129,24 @@ export function apply(ctx, entry) {
     const { gateState: _gateState, ...value } = options();
     return value;
   };
-  const managedRoute = (provider, model) => isManagedMainRoute(options(), provider, model);
   const nativeVisionRoutes = new Set();
+  const resolvedTextRoutes = new Set();
+  // A route is learned from the adapter catalog on the same resolve call that
+  // DSH uses for its image-admission gate. This lets users switch providers or
+  // models without keeping a second, stale mainProvider/mainModels list in sync.
+  const managedRoute = (provider, model) => {
+    if (options().autoConvert !== true) return false;
+    const key = gateClaimKey(provider, model);
+    return resolvedTextRoutes.has(key) || isManagedMainRoute(options(), provider, model);
+  };
   const managedTextRoute = (provider, model) => managedRoute(provider, model)
     && !nativeVisionRoutes.has(gateClaimKey(provider, model));
 
   // dsh-host-apiproxy checks resolveModelInfo before llm/stream runs. Some
   // providers (notably dsh-llm-deepseek) are not backed by llm-pi-ai, so their
   // catalog cannot be extended through modelOverrides. Report image admission
-  // only for routes this plugin converts immediately in llm/stream.
+  // for every resolved text-only route this plugin converts immediately in
+  // llm/stream; native multimodal routes keep their original capability.
   const llmRuntime = ctx.get('llm');
   if (llmRuntime !== void 0 && typeof llmRuntime.resolveModelInfo === 'function') {
     try {
@@ -148,8 +157,13 @@ export function apply(ctx, entry) {
           const key = gateClaimKey(provider, model);
           if (Array.isArray(info?.inputModalities) && info.inputModalities.includes('image')) {
             nativeVisionRoutes.add(key);
+            resolvedTextRoutes.delete(key);
+          } else if (Array.isArray(info?.inputModalities) && info.inputModalities.includes('text')) {
+            nativeVisionRoutes.delete(key);
+            resolvedTextRoutes.add(key);
           } else {
             nativeVisionRoutes.delete(key);
+            resolvedTextRoutes.delete(key);
           }
         },
       );
@@ -603,8 +617,7 @@ export function apply(ctx, entry) {
     if (llmOptions?.[BYPASS] === true) return next();
     if (!options().autoConvert) return next();
     const route = options();
-    // 只接管用户明确列入 mainProvider/mainModels 的文本主路由。
-    // 其他供应商、其他模型（尤其原生多模态主模型）完整保留 DSH 的原生图片链路。
+    // 自动接管已解析的纯文本路由；原生多模态主模型完整保留 DSH 的原生图片链路。
     if (!managedTextRoute(llmOptions.provider, llmOptions.model)) return next();
     const messages = Array.isArray(llmOptions.messages) ? llmOptions.messages : [];
     const seenAttachmentIds = new Set();

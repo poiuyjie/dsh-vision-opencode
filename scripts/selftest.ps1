@@ -61,7 +61,7 @@ try {
     $env:DSH_HOME = $auto
     & $install -ProfileDir $autoProfile
     $autoSettings = [IO.File]::ReadAllText((Join-Path $auto 'settings.yaml'))
-    Assert-True ($autoSettings -match 'mainProvider: "auto-provider"' -and $autoSettings -match '    - "text-default"') 'inherits agent-default-model as main route'
+    Assert-True ($autoSettings -notmatch '(?m)^  mainProvider:' -and $autoSettings -notmatch '(?m)^  mainModels:') 'does not duplicate agent-default-model into stale route settings'
 
     $legacy = Join-Path $temp 'legacy'
     $legacyProfile = Join-Path $legacy 'profiles\web'
