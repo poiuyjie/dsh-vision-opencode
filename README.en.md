@@ -21,7 +21,7 @@ A plugin for DeepSeek Harness (DSH) that adds a **configurable vision model** al
 - **Auto-conversion** for chat attachments, with ephemeral progress beside the composer and one native DSH `notice` retained only when analysis completes or fails
 - Exact route scoping: only configured `mainProvider/mainModels` routes are intercepted; other providers and natively multimodal main models retain DSH's native image handling
 - Fault tolerance: 60s per-call timeout, one automatic retry for retriable failures, and a graceful placeholder-text fallback when retries are exhausted (the main model still answers and tells the user)
-- Auto-whitelists the image-submission gate (`modelOverrides`), records prior values privately, and restores only plugin-owned fields that users have not changed since
+- Auto-whitelists image submission: pi-ai routes use reversible `modelOverrides`, while adapters such as `deepseek-official` use an in-process capability compatibility layer
 
 ## Supported Systems
 
@@ -113,7 +113,7 @@ vision-opencode:
   provider: ''              # provider route for the vision model; empty = not chosen (selector shows 「识图模型」)
   model: ''                 # vision model id; empty = not chosen (written back once you pick from the dropdown)
   autoConvert: true         # auto-convert toggle (stability escape hatch; set false if problems)
-  mainProvider: opencode-go # provider route for the main model (under the pi-ai adapter)
+  mainProvider: opencode-go # main-model provider route (pi-ai and independent adapters such as deepseek-official are supported)
   mainModels:               # text-only main model ids (auto-whitelist the image gate)
     - deepseek-v4-pro
     - deepseek-v4-flash
@@ -125,7 +125,7 @@ Chat attachments and workspace images use complementary paths. Attachments must 
 
 `autoConvert` applies only when both `mainProvider` and a `mainModels` entry match. Configuring `opencode-go/deepseek-v4-flash`, for example, does not intercept the same model id under another provider, and switching to a native multimodal main model preserves its native image path.
 
-> `mainProvider`/`mainModels` may be left empty: the plugin then changes no config, but sending images to a text-only main model will be rejected by DSH's built-in submission gate (DSH's default safety behavior). Manually declare `input: [text, image]` for the main model under `llm-pi-ai.providers.<provider>.modelOverrides` instead.
+> `mainProvider`/`mainModels` may be left empty: the plugin then intercepts no main route, so DSH's built-in gate still rejects images sent to a text-only model. Normally the installer inherits `agent-default-model`; edit the list only when several text models should be intercepted.
 
 <details>
 <summary>Advanced: manual uninstall</summary>
@@ -176,7 +176,7 @@ A plugin load failure won't take DSH down: the cordis loader isolates per entry 
 
 - The frontend selector is a hand-written DSH client bundle (`window.__ModuleLoader__` format); the client interface may change between rc releases. If the selector doesn't appear, open the browser console and file the error as an issue.
 - Auto-conversion happens at request time; the analyzed text is not written into the persistent session log (it can still survive session compaction, since compaction requests pass through the same conversion waterfall).
-- Auto-whitelisting of the main-model gate is only supported under the pi-ai adapter; configure manually for other adapters.
+- Non-pi-ai routes such as `deepseek-official` rely on DSH's current runtime `resolveModelInfo()` interface. A future change to DSH's image-admission implementation may require a plugin update.
 - Version 0.2.x did not record gate ownership. Existing legacy `modelOverrides` require a one-time manual review; the plugin no longer deletes entries based on guessed model names.
 
 ## License

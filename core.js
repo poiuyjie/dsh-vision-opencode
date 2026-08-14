@@ -13,6 +13,28 @@ export function isManagedMainRoute(config, provider, model) {
     && config.mainModels.includes(model);
 }
 
+/**
+ * Let DSH admit images only for routes that this plugin converts before the
+ * provider call. Returns a cleanup function that restores the original API.
+ */
+export function installImageAdmissionOverride(llmRuntime, isManaged) {
+  if (llmRuntime === null || typeof llmRuntime !== 'object'
+    || typeof llmRuntime.resolveModelInfo !== 'function') return () => {};
+  const original = llmRuntime.resolveModelInfo;
+  const resolveModelInfo = original.bind(llmRuntime);
+  const patched = async (provider, model, signal) => {
+    const info = await resolveModelInfo(provider, model, signal);
+    if (!isManaged(provider, model)
+      || !Array.isArray(info?.inputModalities)
+      || info.inputModalities.includes('image')) return info;
+    return { ...info, inputModalities: [...info.inputModalities, 'image'] };
+  };
+  llmRuntime.resolveModelInfo = patched;
+  return () => {
+    if (llmRuntime.resolveModelInfo === patched) llmRuntime.resolveModelInfo = original;
+  };
+}
+
 export const gateClaimKey = (provider, model) => `${provider}\0${model}`;
 
 function modelOverride(root, provider, model) {

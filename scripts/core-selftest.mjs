@@ -4,6 +4,7 @@ import {
   activateGateClaims,
   countImages,
   countUniqueImages,
+  installImageAdmissionOverride,
   isManagedMainRoute,
   planGateOverrides,
   replaceImagesWithText,
@@ -15,6 +16,22 @@ const config = { mainProvider: 'provider-a', mainModels: ['text-model'] };
 assert.equal(isManagedMainRoute(config, 'provider-a', 'text-model'), true);
 assert.equal(isManagedMainRoute(config, 'provider-b', 'text-model'), false);
 assert.equal(isManagedMainRoute(config, 'provider-a', 'vision-model'), false);
+
+const originalResolveModelInfo = async (provider, model) => ({
+  provider,
+  model,
+  inputModalities: model === 'native-vision' ? ['text', 'image'] : ['text'],
+});
+const llmRuntime = { resolveModelInfo: originalResolveModelInfo };
+const restoreImageAdmission = installImageAdmissionOverride(
+  llmRuntime,
+  (provider, model) => provider === 'provider-a' && model === 'text-model',
+);
+assert.deepEqual((await llmRuntime.resolveModelInfo('provider-a', 'text-model')).inputModalities, ['text', 'image']);
+assert.deepEqual((await llmRuntime.resolveModelInfo('provider-b', 'text-model')).inputModalities, ['text']);
+assert.deepEqual((await llmRuntime.resolveModelInfo('provider-a', 'native-vision')).inputModalities, ['text', 'image']);
+restoreImageAdmission();
+assert.equal(llmRuntime.resolveModelInfo, originalResolveModelInfo);
 
 const nested = [
   { type: 'text', text: 'before' },

@@ -26,6 +26,7 @@ import {
   activateGateClaims,
   countImages,
   countUniqueImages,
+  installImageAdmissionOverride,
   isManagedMainRoute,
   planGateOverrides,
   replaceImagesWithText,
@@ -130,6 +131,20 @@ export function apply(ctx, entry) {
     return value;
   };
   const managedRoute = (provider, model) => isManagedMainRoute(options(), provider, model);
+
+  // dsh-host-apiproxy checks resolveModelInfo before llm/stream runs. Some
+  // providers (notably dsh-llm-deepseek) are not backed by llm-pi-ai, so their
+  // catalog cannot be extended through modelOverrides. Report image admission
+  // only for routes this plugin converts immediately in llm/stream.
+  const llmRuntime = ctx.get('llm');
+  if (llmRuntime !== void 0 && typeof llmRuntime.resolveModelInfo === 'function') {
+    try {
+      const restoreImageAdmission = installImageAdmissionOverride(llmRuntime, managedRoute);
+      ctx.effect(() => restoreImageAdmission);
+    } catch (error) {
+      ctx.logger.warn('vision-opencode: 无法安装图片提交闸门兼容层；非 llm-pi-ai 主模型可能仍会被 DSH 拒绝', error);
+    }
+  }
   let settingsScope;
   let settingsService;
   ctx.inject(['settings'], (sctx) => {
@@ -351,6 +366,17 @@ export function apply(ctx, entry) {
       const descriptor = settingsService.describe().find((item) => item.ns === 'llm-pi-ai');
       if (descriptor === void 0) throw new Error('llm-pi-ai settings namespace is unavailable');
       const claims = decodeGateState(cfg.gateState);
+      const piProvider = descriptor.user?.providers?.[cfg.mainProvider]
+        ?? descriptor.value?.providers?.[cfg.mainProvider];
+      if (cfg.mainProvider.length > 0 && piProvider === void 0) {
+        // Providers owned by another adapter (for example deepseek-official)
+        // cannot be declared through llm-pi-ai.modelOverrides. Admission is
+        // handled by the resolveModelInfo compatibility layer above instead.
+        if (claims.length > 0) await removeGateOverrides();
+        if (cfg.gateState.length > 0) await settingsScope?.update({ gateState: '' });
+        ctx.logger.info(`vision-opencode: ${cfg.mainProvider} 由其他适配器提供，使用运行时图片闸门兼容层`);
+        return;
+      }
       const plan = planGateOverrides(cfg, claims, descriptor.user, descriptor.value);
 
       // 配置中已移除的路由先按原值还原；如果用户后来改过 input，则只释放所有权。

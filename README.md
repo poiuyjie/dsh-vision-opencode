@@ -21,7 +21,7 @@ DeepSeek Harness（DSH）插件：给纯文本主模型加一个**可配置的�
 - 用户在聊天里发图片时**自动转换**：输入区实时显示临时识图进度，结束后只用 DSH 原生 `notice` 留下一条完成或失败记录
 - 只接管 `mainProvider/mainModels` 明确配置的完整路由；其他供应商和原生多模态主模型保持 DSH 原生图片能力
 - 异常兜底：单次调用 60s 超时、可重试失败自动重试 1 次、重试耗尽降级为占位文本（主模型照常回复并告知用户）
-- 自动放行图片提交闸门（`modelOverrides`），隐藏记录修改前的值，卸载时只还原插件拥有且未被用户改写的字段
+- 自动放行图片提交闸门：pi-ai 路由使用可还原的 `modelOverrides`，`deepseek-official` 等其他适配器使用进程内能力兼容层
 
 ## 系统支持
 
@@ -113,7 +113,7 @@ vision-opencode:
   provider: ''              # 识图模型所在供应商路由；留空 = 未选择（选择器显示「识图模型」）
   model: ''                 # 识图模型 id；留空 = 未选择（在下拉里选中后自动写入）
   autoConvert: true         # 发图自动转换开关（稳定性逃生阀，出问题改 false）
-  mainProvider: opencode-go # 主模型所在供应商路由（pi-ai 适配器名下）
+  mainProvider: opencode-go # 主模型所在供应商路由（支持 pi-ai 及 deepseek-official 等独立适配器）
   mainModels:               # 纯文本主模型 id 列表（自动放行图片提交闸门）
     - deepseek-v4-pro
     - deepseek-v4-flash
@@ -125,7 +125,7 @@ vision-opencode:
 
 `autoConvert` 只对 `mainProvider` 与 `mainModels` 同时匹配的路由生效。例如只配置 `opencode-go/deepseek-v4-flash` 时，其他供应商下同名模型不会被拦截，切换到原生多模态主模型也会继续使用 DSH 自带的图片链路。
 
-> `mainProvider`/`mainModels` 可留空：此时插件不会自动改任何配置，但向纯文本主模型发送图片会被 DSH 内置的提交闸门拒绝（这是 DSH 的默认安全行为），需要你手动在 `llm-pi-ai.providers.<provider>.modelOverrides` 里给主模型声明 `input: [text, image]`。
+> `mainProvider`/`mainModels` 可留空：此时插件不会接管任何主路由，向纯文本主模型发送图片仍会被 DSH 内置闸门拒绝。通常让安装脚本从 `agent-default-model` 自动继承即可；需要接管多个文本模型时再手动补充列表。
 
 <details>
 <summary>高级：手动卸载</summary>
@@ -176,7 +176,7 @@ pnpm remove dsh-vision-opencode
 
 - 前端选择器是手写的 DSH client bundle（`window.__ModuleLoader__` 格式），client 接口在 rc 版本间可能变动；选择器不出现时打开浏览器控制台把报错发 issue。
 - 自动转换发生在请求时刻，分析文本不进持久化会话日志（会话压缩后仍可存活，因为压缩请求同样经过转换瀑布）。
-- 仅支持 pi-ai 适配器下的主模型闸门自动放行；其他适配器请手动配置。
+- `deepseek-official` 等非 pi-ai 主路由依赖 DSH 当前的 `resolveModelInfo()` 运行时接口；若未来 DSH 改变图片提交闸门实现，需要同步升级插件。
 - 0.2.x 没有闸门所有权记录；首次升级时若存在旧 `modelOverrides`，需要用户确认后手动清理，插件不会按模型名猜测删除。
 
 ## License
