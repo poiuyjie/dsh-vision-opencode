@@ -17,10 +17,11 @@
 DeepSeek Harness（DSH）插件：给纯文本主模型加一个**可配置的识图模型**。主模型（如 DeepSeek）不认识图片？没关系——图片先交给视觉模型（如 MiMo-V2.5）理解成文本，再把结论交给主模型，全程不用换掉你正在用的主力模型。
 
 - 输入框右侧「识图模型」下拉选择器（自动列出所有供应商中声明了图片输入的模型）
-- `vision_read_image` 工具：主模型在需要理解图片时**主动调用**（OCR / 图表 / 场景描述），带系统提示词引导
-- 用户在聊天里发图片时**自动转换**：图片先用识图模型分析成文本，再交给主模型（主模型永远收不到图片）
+- 运行时 skill `vision-image-analysis`：按需指导主模型调用 `vision_read_image` 做 OCR / 图表 / 场景理解；未启用 DSH skill 服务时自动退化为工具与系统提示词
+- 用户在聊天里发图片时**自动转换**，并以 DSH 原生 `notice` 上下文注入展示“正在识图 / 完成 / 失败 / 缓存复用”过程
+- 只接管 `mainProvider/mainModels` 明确配置的完整路由；其他供应商和原生多模态主模型保持 DSH 原生图片能力
 - 异常兜底：单次调用 60s 超时、可重试失败自动重试 1 次、重试耗尽降级为占位文本（主模型照常回复并告知用户）
-- 安装时自动放行图片提交闸门（`modelOverrides`），卸载时一键还原
+- 自动放行图片提交闸门（`modelOverrides`），隐藏记录修改前的值，卸载时只还原插件拥有且未被用户改写的字段
 
 ## 系统支持
 
@@ -49,7 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/s
 - `--vision-provider` / `--vision-model` 可选：想固定识图模型才传；不传则装好后在输入框右侧「识图模型」下拉里选择（自动列出你所有供应商中支持图片输入的模型）。
 - `--proxy` 仅在安装包的网络环境需要时传；不需要代理就省略。
 - `--main-provider` / `--main-model` 是主模型信息，用于自动放行图片提交闸门；不传则需手动配置（见下）。
-- 脚本只改动：profile 的 `package.json` 依赖、`cordis.patch.yml` 注册条目、`settings.yaml` 的 `vision-opencode` 段；全程幂等，卸载时优先调用插件自带的 `/vision-opencode/uninstall` 端点还原 `modelOverrides`，dsh 未运行时降级为警告并给出手动指引。
+- 脚本只改动：profile 的 `package.json` 依赖、`cordis.patch.yml` 注册条目、`settings.yaml` 的 `vision-opencode` 段；重复运行时会升级 GitHub 依赖并保持配置幂等，卸载时优先调用插件自带的 `/vision-opencode/uninstall` 端点还原 `modelOverrides`，dsh 未运行时降级为警告并给出手动指引。
 
 ## 手动安装
 
@@ -100,13 +101,17 @@ vision-opencode:
 
 重启 `dsh`。重启后输入框右侧会出现「识图模型」下拉——它自动列出你所有供应商中声明了图片输入的模型；未选择时显示「识图模型」占位，选中即写入 settings。
 
+聊天附件和工作区图片走两条互补路径：聊天附件必须在纯文本主模型请求发出前自动转成文字，因此显示为可见的 `vision-opencode` 上下文注入；主模型后来需要读取文件路径、截图、图表或做 OCR 时，会加载 `vision-image-analysis` skill，再调用 `vision_read_image`。二者都使用你在下拉中选择的任意供应商多模态模型，不绑定 OpenCode Go。
+
+`autoConvert` 只对 `mainProvider` 与 `mainModels` 同时匹配的路由生效。例如只配置 `opencode-go/deepseek-v4-flash` 时，其他供应商下同名模型不会被拦截，切换到原生多模态主模型也会继续使用 DSH 自带的图片链路。
+
 > `mainProvider`/`mainModels` 可留空：此时插件不会自动改任何配置，但向纯文本主模型发送图片会被 DSH 内置的提交闸门拒绝（这是 DSH 的默认安全行为），需要你手动在 `llm-pi-ai.providers.<provider>.modelOverrides` 里给主模型声明 `input: [text, image]`。
 
 ## 卸载（先自清理，再删包）
 
 ```bash
 # 1. 在 dsh 运行时执行一次自清理：清空本插件的 settings、移除它写入的 modelOverrides
-curl -X POST http://127.0.0.1:3080/vision-opencode/uninstall
+curl -X POST -H 'x-vision-opencode-action: uninstall' http://127.0.0.1:3080/vision-opencode/uninstall
 
 # 2. 停止 dsh（Ctrl+C）
 
@@ -120,7 +125,7 @@ pnpm remove dsh-vision-opencode
 
 > 第 1 步执行后 `settings.yaml` 可能残留一行 `vision-opencode: {}`（插件 settings 清空后的占位），无害；第 3 步可顺手删除。用一键卸载脚本则无需关心，脚本会一并清掉。
 
-**如果跳过第 1 步**：settings 里残留的 `modelOverrides` 会让纯文本主模型"谎称"支持图片，之后发送图片会直接打到真实 API 报错。请手动删除 `settings.yaml` 中 `llm-pi-ai.providers.<provider>.modelOverrides` 的本插件条目，或执行 `curl -X POST .../vision-opencode/uninstall` 后再重启。
+**如果跳过第 1 步**：settings 里残留的 `modelOverrides` 会让纯文本主模型"谎称"支持图片，之后发送图片会直接打到真实 API 报错。请手动还原 `settings.yaml` 中对应的 `input` 字段，或带上方请求头调用 `/vision-opencode/uninstall` 后再重启。由 0.2.x 升级而来且尚无隐藏 `gateState` 的旧条目无法证明所有权，0.3.x 不会冒险删除，请按实际原值手动清理一次。
 
 插件加载失败不会拖垮 DSH：cordis loader 按条目隔离，失败的插件在「设置 → 插件」里显示 failed，其余插件照常工作。
 
@@ -135,6 +140,7 @@ pnpm remove dsh-vision-opencode
 | 单次调用挂起 | 每次尝试独立 60s 超时 |
 | 用户取消回合 | 直接终止，不做无意义降级 |
 | 插件自身意外 bug | 最后一道保险：图片全部降级为占位文本，不杀死回合 |
+| 切换到未列入 `mainModels` 的模型 | 插件不拦截，完整保留该模型的原生图片处理 |
 
 ## 回退 / 逃生阀
 
@@ -144,9 +150,9 @@ pnpm remove dsh-vision-opencode
 ## 已知限制
 
 - 前端选择器是手写的 DSH client bundle（`window.__ModuleLoader__` 格式），client 接口在 rc 版本间可能变动；选择器不出现时打开浏览器控制台把报错发 issue。
-- `SYNTHETIC_IMAGE_MODELS` 黑名单（index.js 顶部）是硬编码的历史遗留，正常请使用 `mainModels` 配置；两者会自动合并生效。
 - 自动转换发生在请求时刻，分析文本不进持久化会话日志（会话压缩后仍可存活，因为压缩请求同样经过转换瀑布）。
 - 仅支持 pi-ai 适配器下的主模型闸门自动放行；其他适配器请手动配置。
+- 0.2.x 没有闸门所有权记录；首次升级时若存在旧 `modelOverrides`，需要用户确认后手动清理，插件不会按模型名猜测删除。
 
 ## License
 

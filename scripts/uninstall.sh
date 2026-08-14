@@ -60,7 +60,7 @@ ENDPOINT="http://127.0.0.1:$PORT/vision-opencode"
 CLEANED_BY_ENDPOINT=0
 if curl -fsS --max-time 3 "$ENDPOINT/config" >/dev/null 2>&1; then
   info "dsh 正在运行，调用插件自清理端点 POST $ENDPOINT/uninstall"
-  if RESULT=$(curl -fsS --max-time 30 -X POST "$ENDPOINT/uninstall" 2>/dev/null); then
+  if RESULT=$(curl -fsS --max-time 30 -X POST -H 'x-vision-opencode-action: uninstall' "$ENDPOINT/uninstall" 2>/dev/null); then
     echo "$RESULT"
     CLEANED_BY_ENDPOINT=1
     GATE_REMOVED=$(printf '%s' "$RESULT" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{try{const n=JSON.parse(s).gateOverridesRemoved;process.stdout.write(typeof n==="number"?String(n):"")}catch{}})')

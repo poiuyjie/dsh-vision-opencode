@@ -31,6 +31,7 @@ MAIN_PROVIDER=""
 MAIN_MODELS=()
 AUTO_CONVERT="true"
 AUTO_CONVERT_OVERRIDDEN=""
+GATE_STATE=""
 PROXY=""
 
 die() { echo "✗ $*" >&2; exit 1; }
@@ -68,19 +69,20 @@ fi
 [ -f "$PROFILE_DIR/package.json" ] || die "$PROFILE_DIR 不是 dsh profile 目录（缺少 package.json）"
 cd "$PROFILE_DIR"
 
-# ---- 1. 安装依赖（幂等：package.json 里已有则跳过）----
+# ---- 1. 安装或升级依赖 ----
+PNPM_WORKSPACE_ARGS=()
+if [ -f pnpm-workspace.yaml ]; then
+  PNPM_WORKSPACE_ARGS=(-w)
+fi
 if grep -q '"dsh-vision-opencode"' package.json; then
-  info "依赖已存在，跳过 pnpm add"
+  # GitHub branch 依赖会被锁到具体 commit；必须显式 update 才能取得新版本。
+  info "依赖已存在，升级到仓库最新版本"
+  pnpm update "${PNPM_WORKSPACE_ARGS[@]}" dsh-vision-opencode
 else
   # DSH 新版 profile 目录自带 pnpm-workspace.yaml（packages: [.]），是 pnpm 工作区根：
   # 直接 pnpm add 会报 ERR_PNPM_ADDING_TO_ROOT，必须 -w 显式装到根。
-  if [ -f pnpm-workspace.yaml ]; then
-    info "安装依赖: pnpm add -w $REPO_SPEC"
-    pnpm add -w "$REPO_SPEC"
-  else
-    info "安装依赖: pnpm add $REPO_SPEC"
-    pnpm add "$REPO_SPEC"
-  fi
+  info "安装依赖: pnpm add ${PNPM_WORKSPACE_ARGS[*]} $REPO_SPEC"
+  pnpm add "${PNPM_WORKSPACE_ARGS[@]}" "$REPO_SPEC"
 fi
 
 # ---- 2. 注册 cordis.patch.yml 条目（幂等：已有 id: vision-opencode 则跳过）----
@@ -140,6 +142,8 @@ if [ -f "$SETTINGS_FILE" ] && grep -q '^vision-opencode:' "$SETTINGS_FILE"; then
   if [ ${#MAIN_MODELS[@]} -eq 0 ]; then
     while IFS= read -r m; do [ -n "$m" ] && MAIN_MODELS+=("$m"); done < <(extract_list)
   fi
+  # 隐藏所有权记录必须跨重装保留，否则卸载时无法安全还原 modelOverrides。
+  GATE_STATE="$(extract_key gateState)"
 fi
 
 SETTINGS_BLOCK="vision-opencode:"
@@ -161,6 +165,10 @@ if [ ${#MAIN_MODELS[@]} -gt 0 ]; then
     SETTINGS_BLOCK="$SETTINGS_BLOCK
     - $m"
   done
+fi
+if [ -n "$GATE_STATE" ]; then
+  SETTINGS_BLOCK="$SETTINGS_BLOCK
+  gateState: $GATE_STATE"
 fi
 
 export SETTINGS_BLOCK SETTINGS_FILE

@@ -19,8 +19,18 @@
 import { basename, extname } from 'node:path';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { BlockAssembler, contentHasImage, createUserMessage, freezeMessage } from '@deepseek-ai/dsh-llm';
+import { BlockAssembler, createUserMessage, freezeMessage } from '@deepseek-ai/dsh-llm';
 import { settingsNamespace } from '@deepseek-ai/dsh-settings';
+import {
+  PLUGIN_IMAGE_INPUT,
+  activateGateClaims,
+  countImages,
+  isManagedMainRoute,
+  planGateOverrides,
+  replaceImagesWithText,
+  sameStringArray,
+  visionCacheKey,
+} from './core.js';
 
 /** `vision_read_image` 接受的扩展名与媒体类型（与内置 read_image 一致）。 */
 const IMAGE_EXTENSIONS = {
@@ -37,16 +47,6 @@ const IMAGE_EXTENSIONS = {
  * 由用户从自己供应商中声明了图片输入的模型里选择。
  */
 
-/**
- * 伪识图模型黑名单：settings.yaml 里 llm-pi-ai.providers.opencode-go.modelOverrides
- * 为了放行图片提交闸门，把纯文本主模型的 input 声明成了 [text, image]。
- * 副作用是这些模型会出现在"支持图片输入"的目录里，所以本插件必须把它们
- * 从识图模型候选（/models 端点与 PUT /config 校验）中排除，否则选中后
- * 识图子调用会把图片发给真正的纯文本 API 报错。
- * 与 settings.yaml 的 modelOverrides 键保持一致。
- */
-const SYNTHETIC_IMAGE_MODELS = new Set(['deepseek-v4-pro', 'deepseek-v4-flash']);
-
 /** 本插件持有的 settings namespace。 */
 const NS = settingsNamespace('vision-opencode');
 
@@ -60,6 +60,8 @@ const Config = z.object({
   mainProvider: z.string().default(''),
   /** 需要声明 image 输入的纯文本主模型 id 列表；插件自动写入 llm-pi-ai 的 modelOverrides。 */
   mainModels: z.array(z.string()).default([]),
+  /** 插件修改 modelOverrides 前保存的 input；隐藏字段，用于卸载时精确恢复。 */
+  gateState: z.string().default('').hidden(),
 });
 
 const VISION_SYSTEM_PROMPT = [
@@ -113,6 +115,7 @@ export function apply(ctx, entry) {
       mainModels: Array.isArray(raw?.mainModels)
         ? raw.mainModels.filter((id) => typeof id === 'string' && id.length > 0)
         : [],
+      gateState: typeof raw?.gateState === 'string' ? raw.gateState : '',
     };
     lastRaw = raw;
     lastGood = next;
@@ -121,6 +124,11 @@ export function apply(ctx, entry) {
   /** 是否已配置可用的识图模型（任一为空即视为未配置）。 */
   const hasVisionModel = (route) => typeof route?.provider === 'string' && route.provider.length > 0
     && typeof route?.model === 'string' && route.model.length > 0;
+  const publicOptions = () => {
+    const { gateState: _gateState, ...value } = options();
+    return value;
+  };
+  const managedRoute = (provider, model) => isManagedMainRoute(options(), provider, model);
   let settingsScope;
   let settingsService;
   ctx.inject(['settings'], (sctx) => {
@@ -142,16 +150,18 @@ export function apply(ctx, entry) {
   // 进入上下文），拒绝原因会作为工具结果交给模型，引导它改用 vision_read_image。
   ctx.tools.guard((exec) => {
     if (exec?.name !== 'read_image') return;
-    const ids = new Set([...SYNTHETIC_IMAGE_MODELS, ...options().mainModels]);
-    if (ids.size === 0) return; // 未管理任何文本主模型时不干预
+    let provider;
     let model;
     try {
-      model = exec.agent?.session?.requestHeader?.()?.config?.model;
+      const config = exec.agent?.session?.requestHeader?.()?.config;
+      provider = config?.provider;
+      model = config?.model;
     } catch {
+      provider = void 0;
       model = void 0;
     }
-    if (typeof model !== 'string' || !ids.has(model)) return;
-    return `read_image is blocked for the current main model (${model}): it only accepts text input, so a real image block would make the provider reject the request with a 400 INVALID_REQUEST error. Use the vision_read_image tool instead — it returns a text analysis of the image.`;
+    if (!managedRoute(provider, model)) return;
+    return `read_image is blocked for the configured text-only main model (${provider}/${model}): a real image block would make the provider reject the request. Load the vision-image-analysis skill when available, then use vision_read_image to receive a text analysis.`;
   });
 
   // ---- 会话内可见的活动指示：正在调用识图模型 → 完成耗时 ----
@@ -160,14 +170,19 @@ export function apply(ctx, entry) {
   // 完成后用 replace 替换成带耗时的完成行；主模型只会看到最终一行。
   const visionStatusMessage = (text) => createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: 'vision-opencode' },
+    source: {
+      kind: 'plugin',
+      plugin: 'vision-opencode',
+      form: 'notice',
+      summary: text.length <= 120 ? text : `${text.slice(0, 119)}…`,
+    },
   });
   /**
    * 在请求所属会话里追加"正在分析图片"状态行，返回一个结束函数：
    * 调用它（可带错误信息）会把状态行替换为带耗时的完成/失败行。
    * 任何一步失败都不影响主流程（展示只是辅助）。
    */
-  function appendVisionStatus(llmOptions, route) {
+  function appendVisionStatus(llmOptions, route, imageCount) {
     try {
       const sessionId = typeof llmOptions?.sessionId === 'string' ? llmOptions.sessionId : void 0;
       if (sessionId === void 0) return void 0;
@@ -175,14 +190,24 @@ export function apply(ctx, entry) {
       if (session === void 0 || typeof session.append !== 'function') return void 0;
       const started = Date.now();
       const event = session.append('user/message', visionStatusMessage(
-        `🔍 识图模型 ${route.provider}/${route.model} 正在分析图片…`,
+        `🔍 正在调用 ${route.provider}/${route.model} 分析 ${imageCount} 张图片…`,
       ), { surfaceOp: 'append' });
-      return (errorText) => {
+      return ({ failures = 0, reused = 0, unexpectedError, cancelled = false } = {}) => {
         try {
           const seconds = ((Date.now() - started) / 1000).toFixed(1);
-          const text = errorText !== void 0
-            ? `⚠️ 图片分析失败（用时 ${seconds}s，识图模型 ${route.provider}/${route.model}）：${errorText}`
-            : `✅ 图片分析完成（用时 ${seconds}s，识图模型 ${route.provider}/${route.model}）`;
+          let text;
+          if (cancelled) {
+            text = `已取消图片分析（${seconds}s，${route.provider}/${route.model}）`;
+          } else if (unexpectedError !== void 0) {
+            text = `⚠️ 图片分析异常（${seconds}s，${route.provider}/${route.model}）：${unexpectedError}`;
+          } else if (failures > 0) {
+            text = `⚠️ 图片分析完成但有 ${failures} 张失败（${seconds}s，${route.provider}/${route.model}）`;
+          } else if (reused === imageCount) {
+            text = `↩ 已复用 ${imageCount} 张图片的识别缓存（${seconds}s，${route.provider}/${route.model}）`;
+          } else {
+            const reusedText = reused > 0 ? `，其中 ${reused} 张复用缓存` : '';
+            text = `✅ 已完成 ${imageCount} 张图片分析（${seconds}s，${route.provider}/${route.model}${reusedText}）`;
+          }
           session.append('user/message', visionStatusMessage(text), {
             // surface 的替换操作符必须是 { op:'replace', start, end } 对象；
             // 写成字符串 'replace' 会被 surface 校验拒绝（状态行将永远卡在"正在分析"）
@@ -208,14 +233,39 @@ export function apply(ctx, entry) {
       order: 112,
       text: () => {
         const route = options();
-        const noReadImage = 'Never call the built-in read_image tool: the current main model only accepts text, and read_image injects a real image block into the context, which makes the provider reject the request with a 400 INVALID_REQUEST error. Always use vision_read_image instead — it returns text analysis.';
+        const routing = 'For a configured text-only main route, load the vision-image-analysis skill when it is available and use vision_read_image instead of built-in read_image. If the current main model natively supports images and read_image is not blocked, keep using its native image path.';
         if (!hasVisionModel(route)) {
-          return `No vision model has been configured yet. The vision_read_image tool exists but will fail with a "not configured" error until the user picks a vision model from the 「识图模型」 selector next to the input box (it lists every image-capable model across the user's providers). ${noReadImage} If image understanding is needed, ask the user to select one there first.`;
+          return `No helper vision model has been configured yet. vision_read_image will fail until the user picks one from the 「识图模型」 selector. ${routing}`;
         }
-        return `A dedicated vision model (${route.provider}/${route.model}) is available through the vision_read_image tool. Use it proactively whenever image content must be understood: the user references an image file in the workspace, a tool result points at an image path, or you need OCR, chart reading, or scene description. ${noReadImage} Images the user attaches in chat are already analyzed automatically before reaching you — instead of the image you receive a text block starting with "[图片内容分析". That text IS the image the user sent in that message: treat it as the attached image, never claim that no image was attached, and only ask which image is meant when the user refers to a different file. If the tool reports the vision model unavailable, say so to the user and continue the task without the image.`;
+        return `A helper vision model (${route.provider}/${route.model}) is available. ${routing} Images attached to a configured text-only main route are analyzed before reaching it; a block starting with "[图片内容分析" is the attached image's content, so treat it as the image and do not ask which image was sent. If the helper fails, report that limitation and continue without inventing image details.`;
       },
     });
   }
+
+  // DSH skill 服务是可选能力。存在时注册一个真正可由模型或用户调用的运行时 skill；
+  // 不存在时仍保留工具描述和系统提示词，不影响插件的基础功能。
+  ctx.inject(['skills'], (sctx) => {
+    sctx.effect(() => sctx.skills.register({
+      name: 'vision-image-analysis',
+      description: 'Use the configured helper vision model to inspect workspace images, perform OCR, read charts, and answer questions about screenshots.',
+      whenToUse: 'Use when the task depends on an image file or image-producing tool result and the current main model cannot safely inspect it directly.',
+      source: 'runtime',
+      invocation: { modelInvocable: true, userInvocable: true },
+      content: [
+        '# Vision image analysis',
+        '',
+        'Use `vision_read_image` for PNG, JPEG, WebP, or GIF files when image contents are needed.',
+        '',
+        '1. Pass the exact workspace path in `file_path`.',
+        '2. Put the user\'s specific OCR, chart, UI, or scene question in `question` when one exists.',
+        '3. Treat the returned analysis as model-generated evidence: preserve uncertainty and never invent unreadable details.',
+        '4. If the tool says no helper model is configured or the call fails, report that limitation and continue with non-image work.',
+        '5. On a natively multimodal main route where built-in `read_image` is available, the native path remains valid.',
+        '',
+        'Chat attachments on configured text-only main routes are converted automatically before the main model runs. Their injected `[图片内容分析` block is the attachment content and does not require calling this tool again.',
+      ].join('\n'),
+    }), 'vision-opencode: runtime skill');
+  });
 
   // ---- 图片提交闸门的自动管理（安装即生效、卸载可还原）----
   // 纯文本主模型默认会被 dsh-host-apiproxy 的提交闸门拒绝图片消息。
@@ -223,23 +273,81 @@ export function apply(ctx, entry) {
   // 放行闸门；真正的图片永远不会到达主模型——llm/stream 瀑布会先替换成文本。
   // 写入走 settings 服务的深合并补丁，只动 modelOverrides 键，幂等、尽力而为。
 
-  /**
-   * 确保主模型 id 的 modelOverrides 存在。settings 服务缺失或 llm-pi-ai
-   * 未注册（例如主模型走的是其他适配器）时只告警，绝不崩溃或改动其他配置。
-   * @param attempt - 插件加载顺序可能让 llm-pi-ai 晚于本插件注册：首次失败后 3 秒重试一次。
-   */
+  function decodeGateState(raw) {
+    if (raw.length === 0) return [];
+    try {
+      const value = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
+      if (!Array.isArray(value)) return [];
+      return value.filter((claim) => claim !== null && typeof claim === 'object'
+        && typeof claim.provider === 'string' && claim.provider.length > 0
+        && typeof claim.model === 'string' && claim.model.length > 0
+        && (claim.state === void 0 || claim.state === 'pending' || claim.state === 'active')
+        && (claim.previousInput === null
+          || (Array.isArray(claim.previousInput) && claim.previousInput.every((item) => typeof item === 'string'))))
+        .map((claim) => ({ ...claim, state: claim.state ?? 'active' }));
+    } catch {
+      ctx.logger.warn('vision-opencode: gateState 无法解析；为避免误删用户配置，将不接管历史 modelOverrides');
+      return [];
+    }
+  }
+
+  const encodeGateState = (claims) => claims.length === 0
+    ? ''
+    : Buffer.from(JSON.stringify(claims), 'utf8').toString('base64url');
+  function modelOverride(root, providerName, modelId) {
+    if (root === null || typeof root !== 'object') return void 0;
+    return root.providers?.[providerName]?.modelOverrides?.[modelId];
+  }
+
+  function pruneEmptyOverride(root, providerName, modelId) {
+    const provider = root.providers?.[providerName];
+    if (provider?.modelOverrides?.[modelId] !== void 0
+      && Object.keys(provider.modelOverrides[modelId]).length === 0) {
+      delete provider.modelOverrides[modelId];
+    }
+    if (provider?.modelOverrides !== void 0 && Object.keys(provider.modelOverrides).length === 0) {
+      delete provider.modelOverrides;
+    }
+  }
+
+  /** 确保已配置文本主路由放行图片提交，并精确记录本插件拥有的 input 改动。 */
   async function ensureGateOverrides(attempt = 1) {
     const cfg = options();
-    if (settingsService === void 0 || cfg.mainProvider.length === 0 || cfg.mainModels.length === 0) return;
+    if (settingsService === void 0) return;
     try {
-      await settingsService.update('llm-pi-ai', {
-        providers: {
-          [cfg.mainProvider]: {
-            modelOverrides: Object.fromEntries(cfg.mainModels.map((id) => [id, { input: ['text', 'image'] }])),
+      const descriptor = settingsService.describe().find((item) => item.ns === 'llm-pi-ai');
+      if (descriptor === void 0) throw new Error('llm-pi-ai settings namespace is unavailable');
+      const claims = decodeGateState(cfg.gateState);
+      const plan = planGateOverrides(cfg, claims, descriptor.user, descriptor.value);
+
+      // 配置中已移除的路由先按原值还原；如果用户后来改过 input，则只释放所有权。
+      let llmRevision = descriptor.revision;
+      if (plan.restored > 0) {
+        await settingsService.replace('llm-pi-ai', plan.user, llmRevision);
+        llmRevision += 1;
+      }
+      for (const route of plan.released) {
+        ctx.logger.warn(`vision-opencode: 检测到 ${route.provider}/${route.model} 的 input 已被外部修改，已停止管理该闸门`);
+      }
+
+      // 所有权必须先落盘；即使下一步进程退出，重启后也能继续写入或安全还原。
+      if (encodeGateState(plan.claims) !== encodeGateState(claims)) {
+        await settingsScope?.update({ gateState: encodeGateState(plan.claims) });
+      }
+      if (plan.desiredModels.length > 0) {
+        await settingsService.update('llm-pi-ai', {
+          providers: {
+            [cfg.mainProvider]: {
+              modelOverrides: Object.fromEntries(plan.desiredModels.map((id) => [id, { input: [...PLUGIN_IMAGE_INPUT] }])),
+            },
           },
-        },
-      });
-      ctx.logger.info(`vision-opencode: 已为主模型放行图片提交闸门（${cfg.mainProvider}: ${cfg.mainModels.join(', ')}）`);
+        }, llmRevision);
+        const activeClaims = activateGateClaims(plan.claims, cfg.mainProvider, plan.desiredModels);
+        if (encodeGateState(activeClaims) !== encodeGateState(plan.claims)) {
+          await settingsScope?.update({ gateState: encodeGateState(activeClaims) });
+        }
+        ctx.logger.info(`vision-opencode: 已为主模型放行图片提交闸门（${cfg.mainProvider}: ${plan.desiredModels.join(', ')}）`);
+      }
     } catch (error) {
       if (attempt < 2) {
         setTimeout(() => { void ensureGateOverrides(attempt + 1); }, 3000);
@@ -252,40 +360,25 @@ export function apply(ctx, entry) {
     }
   }
 
-  /**
-   * 移除本插件写入的 modelOverrides（卸载前调用）。只改 user 层、
-   * 读-改-写带 revision 防冲突，最多重试 3 次；失败时告警并给出手动指引。
-   * @returns 实际移除的条目数（0 = 没有本插件写入的条目）。
-   */
+  /** 只还原 gateState 证明由本插件拥有、且当前值仍未被用户改写的 input 字段。 */
   async function removeGateOverrides() {
     const cfg = options();
     if (settingsService === void 0) return 0;
-    // 候选主模型 id：当前配置 ∪ 硬编码黑名单。配置可能在写入后被改空
-    // （例如 settings 段被外部清掉、或端点自清理时先清空了配置），
-    // 此时仍要按黑名单把历史上写入的「纯文本模型谎称支持图片」条目删掉。
-    const candidates = new Set(cfg.mainModels);
-    for (const id of SYNTHETIC_IMAGE_MODELS) candidates.add(id);
-    if (candidates.size === 0) return 0;
+    const claims = decodeGateState(cfg.gateState);
+    if (claims.length === 0) return 0;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const descriptor = settingsService.describe().find((entry) => entry.ns === 'llm-pi-ai');
         if (descriptor === void 0 || descriptor.user === void 0 || descriptor.user === null || typeof descriptor.user !== 'object') return 0;
         const next = structuredClone(descriptor.user);
         let removed = 0;
-        if (next.providers !== void 0 && next.providers !== null && typeof next.providers === 'object') {
-          for (const [providerName, provider] of Object.entries(next.providers)) {
-            // 配置里指定了供应商时只清理该供应商（本插件只会写那里）；
-            // 配置为空时全供应商扫描（历史写入的供应商可能已不可考）。
-            if (cfg.mainProvider.length > 0 && providerName !== cfg.mainProvider) continue;
-            if (provider === void 0 || provider === null || typeof provider !== 'object') continue;
-            for (const id of candidates) {
-              if (provider.modelOverrides !== void 0 && provider.modelOverrides[id] !== void 0) {
-                delete provider.modelOverrides[id];
-                removed += 1;
-              }
-            }
-            if (provider.modelOverrides !== void 0 && Object.keys(provider.modelOverrides).length === 0) delete provider.modelOverrides;
-          }
+        for (const claim of claims) {
+          const override = modelOverride(next, claim.provider, claim.model);
+          if (!sameStringArray(override?.input, PLUGIN_IMAGE_INPUT)) continue;
+          if (claim.previousInput === null) delete override.input;
+          else override.input = [...claim.previousInput];
+          pruneEmptyOverride(next, claim.provider, claim.model);
+          removed += 1;
         }
         if (removed === 0) return 0;
         await settingsService.replace('llm-pi-ai', next, descriptor.revision);
@@ -428,13 +521,13 @@ export function apply(ctx, entry) {
    * - tool-result 里嵌套的图片（内置 read_image 产生的）：分析文本追加进该 tool-result 的 content
    * `sink` 收集本次去掉的每张图的分析文本；无图时返回原数组元素（不产生新对象）。
    */
-  async function convertContent(blocks, signal, sink, route) {
+  async function convertContent(blocks, signal, sink, route, stats) {
     const out = [];
     for (const block of blocks) {
       if (block.type === 'image') {
         const ref = block.attachment;
-        const key = typeof ref?.attachmentId === 'string' ? ref.attachmentId : 'unknown';
-        let analysis = analysisCache.get(key);
+        const key = visionCacheKey(route, ref);
+        let analysis = key === void 0 ? void 0 : analysisCache.get(key);
         if (analysis === void 0) {
           let ok = false;
           try {
@@ -445,8 +538,9 @@ export function apply(ctx, entry) {
             if (error instanceof VisionCallerAborted || signal?.aborted) throw error;
             // 识图模型不可用：降级为占位文本，主模型照常工作并向用户说明
             analysis = fallbackAnalysisText(route, error);
+            stats.failures += 1;
           }
-          if (ok) {
+          if (ok && key !== void 0) {
             // 只缓存成功结果：失败占位不落缓存，避免进程内持续"中毒"
             if (analysisCache.size >= 128) analysisCache.clear();
             analysisCache.set(key, analysis);
@@ -455,13 +549,14 @@ export function apply(ctx, entry) {
           // 缓存命中：同一张图重复出现时直接复用结论，并明确标注
           // 未重复调用识图模型，避免用户误以为"识别了两次"
           analysis = `${analysis}\n（注：该图片与之前的图片相同，分析结论复用缓存，未重复调用识图模型）`;
+          stats.reused += 1;
         }
         sink.push(analysis);
         continue;
       }
       if (block.type === 'tool-result' && Array.isArray(block.content)) {
         const nested = [];
-        const content = await convertContent(block.content, signal, nested, route);
+        const content = await convertContent(block.content, signal, nested, route, stats);
         out.push(nested.length > 0
           ? { ...block, content: [...content, formatAnalyses(nested, route)] }
           : block);
@@ -476,24 +571,25 @@ export function apply(ctx, entry) {
     if (llmOptions?.[BYPASS] === true) return next();
     if (!options().autoConvert) return next();
     const route = options();
-    const isVisionRoute = llmOptions.provider === route.provider && llmOptions.model === route.model;
+    // 只接管用户明确列入 mainProvider/mainModels 的文本主路由。
+    // 其他供应商、其他模型（尤其原生多模态主模型）完整保留 DSH 的原生图片链路。
+    if (!managedRoute(llmOptions.provider, llmOptions.model)) return next();
     const messages = Array.isArray(llmOptions.messages) ? llmOptions.messages : [];
-    // 防御：部分消息的 content 可能是字符串（历史/压缩产物），contentHasImage 只接受数组；
-    // 若本监听器因此抛错，请求可能未经转换直接打到上游（400）。
-    const hasImage = messages.some((message) => Array.isArray(message?.content) && contentHasImage(message.content));
-    if (!hasImage || isVisionRoute) return next();
+    const imageCount = messages.reduce((total, message) => total
+      + (Array.isArray(message?.content) ? countImages(message.content) : 0), 0);
+    if (imageCount === 0) return next();
     if (!hasVisionModel(route)) {
       // 未配置识图模型：不能替用户假定任何模型。图片降级为指引文本，
       // 主模型照常完成回合并提示用户先去选择器里选一个识图模型。
       return (async function* unconfiguredStream() {
         const converted = messages.map((message) => {
           if (!Array.isArray(message?.content)) return message;
+          const replacement = replaceImagesWithText(message.content,
+            '[识图模型未配置] 这张图片未能自动分析：请先点击输入框右侧的「识图模型」下拉，从自己供应商中支持图片输入的模型里选择一个，然后重发图片。');
+          if (replacement.replaced === 0) return message;
           return freezeMessage({
             ...message,
-            content: [
-              ...message.content.filter((block) => block.type !== 'image'),
-              { type: 'text', text: '[识图模型未配置] 用户发送的图片未能自动分析：请先点击输入框右侧的「识图模型」下拉，从自己供应商中支持图片输入的模型里选择一个，然后重发图片。' },
-            ],
+            content: replacement.content,
           });
         });
         yield* ctx.llm.stream({ ...llmOptions, messages: converted, [BYPASS]: true });
@@ -510,7 +606,8 @@ export function apply(ctx, entry) {
     // 发出去，再把它的 chunk 转交给外层消费者。BYPASS 防止嵌套调用再次触发本监听器。
     return (async function* visionTextStream() {
       let converted;
-      const finishStatus = appendVisionStatus(llmOptions, route);
+      const stats = { failures: 0, reused: 0 };
+      const finishStatus = appendVisionStatus(llmOptions, route, imageCount);
       try {
         converted = [];
         for (const message of messages) {
@@ -519,7 +616,7 @@ export function apply(ctx, entry) {
             continue;
           }
           const sink = [];
-          const content = await convertContent(message.content, llmOptions.signal, sink, route);
+          const content = await convertContent(message.content, llmOptions.signal, sink, route, stats);
           if (sink.length === 0) {
             converted.push(message);
             continue;
@@ -529,25 +626,34 @@ export function apply(ctx, entry) {
             content: [...content, formatAnalyses(sink, route)],
           }));
         }
-        finishStatus?.();
+        finishStatus?.(stats);
       } catch (error) {
-        // 调用方取消：向上抛（回合正在结束，降级没有意义，也不更新状态行）
-        if (error instanceof VisionCallerAborted || llmOptions.signal?.aborted) throw error;
-        finishStatus?.(error?.message ?? String(error));
+        // 调用方取消：结束可见状态后向上抛，避免留下永久“正在分析”的状态行。
+        if (error instanceof VisionCallerAborted || llmOptions.signal?.aborted) {
+          finishStatus?.({ ...stats, cancelled: true });
+          throw error;
+        }
+        finishStatus?.({ ...stats, unexpectedError: error?.message ?? String(error) });
         // 插件自身的意外错误也不能杀死回合：全部图片降级为占位文本，
         // 主模型照常工作并向用户说明（这是发布版的最后一道保险）。
         ctx.logger.error('vision-opencode: 图片自动转换出现意外错误，降级为占位文本', error);
         converted = messages.map((message) => {
           if (!Array.isArray(message?.content)) return message;
+          const replacement = replaceImagesWithText(message.content, fallbackAnalysisText(route, error));
+          if (replacement.replaced === 0) return message;
           return freezeMessage({
             ...message,
-            content: [
-              ...message.content.filter((block) => block.type !== 'image'),
-              { type: 'text', text: fallbackAnalysisText(route, error) },
-            ],
+            content: replacement.content,
           });
         });
       }
+      // 最后一道结构校验：任何嵌套 image 都不能进入已声明为纯文本的主模型。
+      converted = converted.map((message) => {
+        if (!Array.isArray(message?.content) || countImages(message.content) === 0) return message;
+        const replacement = replaceImagesWithText(message.content,
+          '[图片自动转换未完成：为保护纯文本主模型，本图片已移除。请重试或切换到原生多模态模型。]');
+        return freezeMessage({ ...message, content: replacement.content });
+      });
       const rewritten = {
         ...llmOptions,
         messages: converted,
@@ -567,7 +673,7 @@ export function apply(ctx, entry) {
       handler: async (req, res) => {
         try {
           if (req.method === 'GET') {
-            json(res, 200, options());
+            json(res, 200, publicOptions());
             return;
           }
           if (req.method === 'PUT') {
@@ -578,8 +684,7 @@ export function apply(ctx, entry) {
               json(res, 400, { error: 'provider and model strings are required' });
               return;
             }
-            // 拒绝伪识图模型（见 SYNTHETIC_IMAGE_MODELS 注释），并双重校验
-            // 模型确实声明了 image 输入，防止手工 PUT 把纯文本模型设进来。
+            // 精确排除本插件管理的文本主路由，并校验候选模型确实声明了 image 输入。
             let declaredVision = false;
             try {
               const info = await ctx.llm.resolveModelInfo(provider, model);
@@ -587,7 +692,7 @@ export function apply(ctx, entry) {
             } catch {
               declaredVision = false;
             }
-            if (SYNTHETIC_IMAGE_MODELS.has(model) || options().mainModels.includes(model) || !declaredVision) {
+            if (managedRoute(provider, model) || !declaredVision) {
               json(res, 400, { error: `model "${provider}/${model}" is not a vision-capable model` });
               return;
             }
@@ -595,9 +700,10 @@ export function apply(ctx, entry) {
               // 只更新识图模型，保留其余配置（autoConvert/mainProvider/mainModels）。
               await settingsScope.replace({ ...options(), provider, model });
             } else {
-              current = () => ({ provider, model });
+              const next = { ...options(), provider, model };
+              current = () => next;
             }
-            json(res, 200, options());
+            json(res, 200, publicOptions());
             return;
           }
           res.writeHead(405);
@@ -619,14 +725,13 @@ export function apply(ctx, entry) {
             return;
           }
           const groups = [];
-          const synthetic = new Set([...SYNTHETIC_IMAGE_MODELS, ...options().mainModels]);
           for (const provider of ctx.llm.listProviders()) {
             try {
               const models = await ctx.llm.listModels(provider.id);
               const vision = models.filter((model) =>
                 Array.isArray(model.inputModalities)
                 && model.inputModalities.includes('image')
-                && !synthetic.has(model.id));
+                && !managedRoute(provider.id, model.id));
               if (vision.length === 0) continue;
               groups.push({
                 provider: provider.id,
@@ -652,6 +757,11 @@ export function apply(ctx, entry) {
           if (req.method !== 'POST') {
             res.writeHead(405);
             res.end();
+            return;
+          }
+          // 自定义请求头阻止第三方网页用简单跨站 POST 触发破坏性清理。
+          if (req.headers['x-vision-opencode-action'] !== 'uninstall') {
+            json(res, 403, { error: 'missing x-vision-opencode-action: uninstall header' });
             return;
           }
           // 卸载前自清理：清空本插件自己的 settings 用户层，
@@ -687,7 +797,7 @@ export function apply(ctx, entry) {
   // ---- 工具：vision_read_image ----
   ctx.tools.register(defineTool({
     name: 'vision_read_image',
-    description: `Use the configured vision model (selected via the 「识图模型」 dropdown next to the input box, which lists image-capable models across all providers) to read and analyze an image file (PNG/JPEG/WebP/GIF) and return a detailed text description: OCR transcription, layout, chart values, scene. Use this tool whenever image content must be understood — including when the current main model does not support image input. Prefer this tool over the built-in read_image tool, which injects a real image block and makes text-only providers reject the request with a 400 error. If no vision model is configured yet, this tool fails with guidance.`,
+    description: `Use the configured helper vision model (selected via the 「识图模型」 dropdown, across any provider) to analyze a PNG/JPEG/WebP/GIF workspace file and return OCR, layout, chart, or scene details as text. Use this tool on configured text-only main routes, where built-in read_image is blocked because it would inject a real image. A natively multimodal main model may keep using its native image path. If no helper vision model is configured, this tool fails with guidance.`,
     parameters: {
       file_path: {
         type: 'string',

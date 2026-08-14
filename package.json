@@ -1,6 +1,6 @@
 {
   "name": "dsh-vision-opencode",
-  "version": "0.2.10",
+  "version": "0.3.0",
   "type": "module",
   "main": "index.js",
   "description": "DeepSeek Harness plugin: configurable vision model with vision_read_image tool, composer-bar vision-model selector, and automatic image-to-text conversion for text-only main models.",
@@ -20,12 +20,20 @@
     "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6 <0.2.0",
     "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.2.0",
     "@deepseek-ai/dsh-settings": ">=0.1.0-rc.6 <0.2.0",
+    "@deepseek-ai/dsh-skill": ">=0.1.0-rc.6 <0.2.0",
     "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-skill": {
+      "optional": true
+    }
   },
   "files": [
     "index.js",
+    "core.js",
     "client.js",
-    "README.md"
+    "README.md",
+    "README.en.md"
   ],
   "dsh": {
     "client": {

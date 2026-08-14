@@ -14,15 +14,18 @@ PROFILE="$TMP/profile"
 SETTINGS="$TMP/settings.yaml"
 mkdir -p "$PROFILE"
 
-# fake pnpm：add 往 package.json 追加一行，remove 删除该行；工作区根场景接受 -w
+# fake pnpm：记录调用，add 往 package.json 追加一行，remove 删除该行；接受 -w
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/pnpm" <<'EOF'
 #!/usr/bin/env bash
-if [ "$1" = "-w" ]; then shift; fi
-if [ "$1" = "add" ]; then printf '  "dsh-vision-opencode": "%s",\n' "$2" >> package.json; fi
-if [ "$1" = "remove" ]; then sed -i '/dsh-vision-opencode/d' package.json; fi
+printf '%s\n' "$*" >> "$PNPM_LOG"
+command="$1"; shift
+if [ "${1:-}" = "-w" ]; then shift; fi
+if [ "$command" = "add" ]; then printf '  "dsh-vision-opencode": "%s",\n' "$1" >> package.json; fi
+if [ "$command" = "remove" ]; then sed -i '/dsh-vision-opencode/d' package.json; fi
 EOF
 chmod +x "$TMP/bin/pnpm"
+export PNPM_LOG="$TMP/pnpm.log"
 
 cat > "$SETTINGS" <<'EOF'
 agent-default-model:
@@ -57,6 +60,7 @@ echo "== 2. install 幂等 =="
 PATH="$TMP/bin:$PATH" DSH_HOME="$TMP" bash "$HERE/install.sh" --profile-dir "$PROFILE" >/dev/null
 [ "$(grep -c 'id: vision-opencode' "$PROFILE/cordis.patch.yml")" = "1" ] && ok "cordis 条目唯一" || bad "cordis 条目重复"
 [ "$(grep -c '^vision-opencode:' "$SETTINGS")" = "1" ] && ok "settings 段唯一" || bad "settings 段重复"
+grep -q '^update dsh-vision-opencode$' "$PNPM_LOG" && ok "重复安装会拉取仓库最新版本" || bad "已有依赖时跳过了升级"
 
 echo "== 3. 端点残留 vision-opencode: {} 应被 install 原位替换 =="
 sed -i 's/^vision-opencode:.*/vision-opencode: {}/' "$SETTINGS"
@@ -119,8 +123,10 @@ grep -q 'autoConvert: true' "$FRESH/settings.yaml" && ok "未传参数继承现�
 [ "$(grep -c '^vision-opencode:' "$FRESH/settings.yaml")" = "1" ] && ok "段唯一（无重复键）" || bad "段重复"
 
 echo "== 12. 合并后再跑（不带参数）保持既有值 =="
+sed -i '/^  autoConvert:/a\  gateState: eyJvd25lZCI6dHJ1ZX0' "$FRESH/settings.yaml"
 PATH="$TMP/bin:$PATH" DSH_HOME="$FRESH" bash "$HERE/install.sh" --profile-dir "$FRESH/profile" >/dev/null
 grep -q 'provider: new-p' "$FRESH/settings.yaml" && grep -q 'mainProvider: mp' "$FRESH/settings.yaml" && grep -q '    - mm1' "$FRESH/settings.yaml" && ok "无参数重跑保留既有配置" || bad "无参数重跑丢失配置"
+grep -q 'gateState: eyJvd25lZCI6dHJ1ZX0' "$FRESH/settings.yaml" && ok "重装保留隐藏 gateState" || bad "重装丢失 gateState"
 
 echo
 echo "结果: $PASS 通过, $FAIL 失败"
