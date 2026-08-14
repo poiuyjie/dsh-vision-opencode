@@ -129,7 +129,7 @@ PATH="$TMP/bin:$PATH" DSH_HOME="$FRESH" bash "$HERE/install.sh" --profile-dir "$
 grep -Eq 'provider: (new-p|"new-p")' "$FRESH/settings.yaml" && grep -Eq 'mainProvider: (mp|"mp")' "$FRESH/settings.yaml" && grep -Eq '    - (mm1|"mm1")' "$FRESH/settings.yaml" && ok "无参数重跑保留既有配置" || bad "无参数重跑丢失配置"
 grep -q 'gateState: eyJvd25lZCI6dHJ1ZX0' "$FRESH/settings.yaml" && ok "重装保留隐藏 gateState" || bad "重装丢失 gateState"
 
-echo "== 13. 旧版图片闸门无 gateState 时必须原样中止 =="
+echo "== 13. 无 gateState 的用户图片 override 不得阻止卸载 =="
 LEGACY="$TMP/legacy"; mkdir -p "$LEGACY/profile"
 cat > "$LEGACY/settings.yaml" <<'EOF'
 llm-pi-ai:
@@ -149,16 +149,47 @@ cat > "$LEGACY/profile/cordis.patch.yml" <<'EOF'
 EOF
 printf '{ "dependencies": { "dsh-vision-opencode": "github:poiuyjie/dsh-vision-opencode" } }\n' > "$LEGACY/profile/package.json"
 cp "$LEGACY/settings.yaml" "$LEGACY/settings.before"
-cp "$LEGACY/profile/cordis.patch.yml" "$LEGACY/cordis.before"
-cp "$LEGACY/profile/package.json" "$LEGACY/package.before"
-if PATH="$TMP/bin:$PATH" DSH_HOME="$LEGACY" bash "$HERE/uninstall.sh" --profile-dir "$LEGACY/profile" --port 1 >/dev/null 2>&1; then
-  bad "危险的旧版残留未阻止卸载"
+PATH="$TMP/bin:$PATH" DSH_HOME="$LEGACY" bash "$HERE/uninstall.sh" --profile-dir "$LEGACY/profile" --port 1 >/dev/null
+grep -q 'input: \[ text, image \]' "$LEGACY/settings.yaml" && ok "用户图片 override 保留" || bad "用户图片 override 被修改"
+! grep -q '^vision-opencode:' "$LEGACY/settings.yaml" && ok "插件 settings 已移除" || bad "插件 settings 残留"
+! grep -q 'vision-opencode' "$LEGACY/profile/cordis.patch.yml" && ok "插件 Cordis 条目已移除" || bad "插件 Cordis 条目残留"
+
+echo "== 14. 有 gateState 时离线卸载必须原样中止 =="
+CLAIMED="$TMP/claimed"; mkdir -p "$CLAIMED/profile"
+cp "$LEGACY/settings.before" "$CLAIMED/settings.yaml"
+sed -i '/^  model:/a\  gateState: owned-claim' "$CLAIMED/settings.yaml"
+cat > "$CLAIMED/profile/cordis.patch.yml" <<'EOF'
+- insert:
+    - id: vision-opencode
+      name: 'dsh-vision-opencode'
+EOF
+printf '{ "dependencies": { "dsh-vision-opencode": "github:poiuyjie/dsh-vision-opencode" } }\n' > "$CLAIMED/profile/package.json"
+cp "$CLAIMED/settings.yaml" "$CLAIMED/settings.before"
+cp "$CLAIMED/profile/cordis.patch.yml" "$CLAIMED/cordis.before"
+cp "$CLAIMED/profile/package.json" "$CLAIMED/package.before"
+if PATH="$TMP/bin:$PATH" DSH_HOME="$CLAIMED" bash "$HERE/uninstall.sh" --profile-dir "$CLAIMED/profile" --port 1 >/dev/null 2>&1; then
+  bad "有所有权记录时未阻止离线卸载"
 else
-  ok "危险的旧版残留会中止卸载"
+  ok "有所有权记录时阻止离线卸载"
 fi
-cmp -s "$LEGACY/settings.before" "$LEGACY/settings.yaml" && ok "中止后 settings 原样保留" || bad "中止后 settings 被修改"
-cmp -s "$LEGACY/cordis.before" "$LEGACY/profile/cordis.patch.yml" && ok "中止后 Cordis 原样保留" || bad "中止后 Cordis 被修改"
-cmp -s "$LEGACY/package.before" "$LEGACY/profile/package.json" && ok "中止后依赖原样保留" || bad "中止后依赖被修改"
+cmp -s "$CLAIMED/settings.before" "$CLAIMED/settings.yaml" && ok "中止后 settings 原样保留" || bad "中止后 settings 被修改"
+cmp -s "$CLAIMED/cordis.before" "$CLAIMED/profile/cordis.patch.yml" && ok "中止后 Cordis 原样保留" || bad "中止后 Cordis 被修改"
+cmp -s "$CLAIMED/package.before" "$CLAIMED/profile/package.json" && ok "中止后依赖原样保留" || bad "中止后依赖被修改"
+
+echo "== 15. 参数错误必须在安装副作用前失败 =="
+INVALID="$TMP/invalid"; mkdir -p "$INVALID/profile"
+printf 'agent-default-model:\n  provider: p\n  model: m\n' > "$INVALID/settings.yaml"
+printf '# untouched\n\n[]\n' > "$INVALID/profile/cordis.patch.yml"
+printf '{ "dependencies": {} }\n' > "$INVALID/profile/package.json"
+cp "$INVALID/settings.yaml" "$INVALID/settings.before"
+cp "$INVALID/profile/cordis.patch.yml" "$INVALID/cordis.before"
+cp "$INVALID/profile/package.json" "$INVALID/package.before"
+if PATH="$TMP/bin:$PATH" DSH_HOME="$INVALID" bash "$HERE/install.sh" --profile-dir "$INVALID/profile" --vision-provider only >/dev/null 2>&1; then
+  bad "不完整识图参数未报错"
+else
+  ok "不完整识图参数会报错"
+fi
+cmp -s "$INVALID/settings.before" "$INVALID/settings.yaml" && cmp -s "$INVALID/cordis.before" "$INVALID/profile/cordis.patch.yml" && cmp -s "$INVALID/package.before" "$INVALID/profile/package.json" && ok "参数错误零副作用" || bad "参数错误产生了安装副作用"
 
 echo
 echo "结果: $PASS 通过, $FAIL 失败"

@@ -77,21 +77,34 @@ try {
     [IO.File]::WriteAllText($legacyPackagePath, $legacyPackage, $utf8)
 
     $env:DSH_HOME = $legacy
+    & $uninstall -ProfileDir $legacyProfile -Port 1
+    $legacyAfter = [IO.File]::ReadAllText($legacySettingsPath)
+    Assert-True ($legacyAfter -match 'input: \[ text, image \]') 'preserves user image overrides without gateState'
+    Assert-True ($legacyAfter -notmatch '(?m)^vision-opencode:') 'removes plugin settings beside user image overrides'
+    Assert-True ([IO.File]::ReadAllText($legacyPatchPath) -notmatch 'vision-opencode') 'removes plugin Cordis entry beside user image overrides'
+
+    $claimed = Join-Path $temp 'claimed'
+    $claimedProfile = Join-Path $claimed 'profiles\web'
+    $claimedSettingsPath = Join-Path $claimed 'settings.yaml'
+    $claimedPatchPath = Join-Path $claimedProfile 'cordis.patch.yml'
+    $claimedPackagePath = Join-Path $claimedProfile 'package.json'
+    [void](New-Item -ItemType Directory -Force -Path $claimedProfile)
+    $claimedSettings = $legacySettings.Replace("  model: vision-model`n", "  model: vision-model`n  gateState: owned-claim`n")
+    [IO.File]::WriteAllText($claimedSettingsPath, $claimedSettings, $utf8)
+    [IO.File]::WriteAllText($claimedPatchPath, $legacyPatch, $utf8)
+    [IO.File]::WriteAllText($claimedPackagePath, $legacyPackage, $utf8)
+    $env:DSH_HOME = $claimed
     $uninstallStopped = $false
-    try {
-      & $uninstall -ProfileDir $legacyProfile -Port 1
-    } catch {
-      $uninstallStopped = $_.Exception.Message -like 'Uninstall stopped:*'
-    }
-    Assert-True $uninstallStopped 'stops on legacy image gates without gateState'
-    Assert-True ([IO.File]::ReadAllText($legacySettingsPath) -eq $legacySettings) 'preserves settings after stopped uninstall'
-    Assert-True ([IO.File]::ReadAllText($legacyPatchPath) -eq $legacyPatch) 'preserves Cordis config after stopped uninstall'
-    Assert-True ([IO.File]::ReadAllText($legacyPackagePath) -eq $legacyPackage) 'preserves dependency after stopped uninstall'
+    try { & $uninstall -ProfileDir $claimedProfile -Port 1 } catch { $uninstallStopped = $_.Exception.Message -like 'Uninstall stopped:*' }
+    Assert-True $uninstallStopped 'stops offline uninstall when gateState proves plugin ownership'
+    Assert-True ([IO.File]::ReadAllText($claimedSettingsPath) -eq $claimedSettings) 'preserves settings after owned uninstall stops'
+    Assert-True ([IO.File]::ReadAllText($claimedPatchPath) -eq $legacyPatch) 'preserves Cordis config after owned uninstall stops'
+    Assert-True ([IO.File]::ReadAllText($claimedPackagePath) -eq $legacyPackage) 'preserves dependency after owned uninstall stops'
   } finally {
     $env:PATH = $oldPath
     if ($null -eq $oldDshHome) { Remove-Item Env:DSH_HOME -ErrorAction SilentlyContinue } else { $env:DSH_HOME = $oldDshHome }
   }
-  Write-Host 'PowerShell selftest: 14 passed, 0 failed'
+  Write-Host 'PowerShell selftest: 17 passed, 0 failed'
 } finally {
   if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force }
 }

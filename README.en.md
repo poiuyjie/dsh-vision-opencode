@@ -21,7 +21,7 @@ A plugin for DeepSeek Harness (DSH) that adds a **configurable vision model** al
 - **Auto-conversion** for chat attachments, with ephemeral progress beside the composer and one native DSH `notice` retained only when analysis completes or fails
 - Exact route scoping: only configured `mainProvider/mainModels` routes are intercepted; other providers and natively multimodal main models retain DSH's native image handling
 - Fault tolerance: 60s per-call timeout, one automatic retry for retriable failures, and a graceful placeholder-text fallback when retries are exhausted (the main model still answers and tells the user)
-- Auto-whitelists image submission: pi-ai routes use reversible `modelOverrides`, while adapters such as `deepseek-official` use an in-process capability compatibility layer
+- Admits image submission through an in-process capability layer across pi-ai, `deepseek-official`, and other adapters without modifying the user's model catalog
 
 ## Supported Systems
 
@@ -70,7 +70,7 @@ $uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-v
 >
 > `mainProvider/mainModels` only define which text-only main route to intercept; they are not vision-model selection. Keep existing settings, or configure them in the section below if needed.
 >
-> For legacy installs without a `gateState` ownership record, uninstall stops before changing files when image gates are detected. Restore those values first so existing image sessions do not break.
+> Uninstall only handles legacy gate entries proven by a non-empty `gateState`; it never scans or changes image-model settings owned by users or other plugins.
 
 ## Manual Install
 
@@ -133,7 +133,7 @@ Chat attachments and workspace images use complementary paths. Attachments must 
 ## Manual Uninstall (Advanced)
 
 ```bash
-# 1. With dsh running, self-clean once: clears this plugin's settings, removes its modelOverrides
+# 1. With dsh running, self-clean once: clear plugin settings and restore legacy plugin-owned modelOverrides
 curl -X POST -H 'x-vision-opencode-action: uninstall' http://127.0.0.1:3080/vision-opencode/uninstall
 
 # 2. Stop dsh (Ctrl+C)
@@ -148,7 +148,7 @@ pnpm remove dsh-vision-opencode
 
 > After step 1, `settings.yaml` may keep a single leftover line `vision-opencode: {}` (the placeholder of cleared plugin settings) — harmless; you can delete it in step 3. The one-click uninstall script removes it for you.
 
-**If you skip step 1**: leftover `modelOverrides` can make a text-only main model claim image support and send later images to the real API. Restore the corresponding `input` field manually, or call `/vision-opencode/uninstall` with the header shown above and restart. Legacy entries upgraded from 0.2.x have no ownership record; 0.3.x intentionally will not guess-delete them, so they require one manual cleanup based on their real prior value.
+The current version creates no new `modelOverrides`. When upgrading with a non-empty legacy `gateState`, keep dsh running and complete step 1 first. The uninstaller never guesses ownership or deletes unclaimed user settings.
 
 </details>
 
@@ -177,7 +177,7 @@ A plugin load failure won't take DSH down: the cordis loader isolates per entry 
 - The frontend selector is a hand-written DSH client bundle (`window.__ModuleLoader__` format); the client interface may change between rc releases. If the selector doesn't appear, open the browser console and file the error as an issue.
 - Auto-conversion happens at request time; the analyzed text is not written into the persistent session log (it can still survive session compaction, since compaction requests pass through the same conversion waterfall).
 - Non-pi-ai routes such as `deepseek-official` rely on DSH's current runtime `resolveModelInfo()` interface. A future change to DSH's image-admission implementation may require a plugin update.
-- Version 0.2.x did not record gate ownership. Existing legacy `modelOverrides` require a one-time manual review; the plugin no longer deletes entries based on guessed model names.
+- Version 0.2.x did not record gate ownership. Unclaimed historical `modelOverrides` require review against their real prior values; the plugin never deletes entries based on guessed model names.
 
 ## License
 

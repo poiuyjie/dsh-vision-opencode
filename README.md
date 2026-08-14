@@ -21,7 +21,7 @@ DeepSeek Harness（DSH）插件：给纯文本主模型加一个**可配置的�
 - 用户在聊天里发图片时**自动转换**：输入区实时显示临时识图进度，结束后只用 DSH 原生 `notice` 留下一条完成或失败记录
 - 只接管 `mainProvider/mainModels` 明确配置的完整路由；其他供应商和原生多模态主模型保持 DSH 原生图片能力
 - 异常兜底：单次调用 60s 超时、可重试失败自动重试 1 次、重试耗尽降级为占位文本（主模型照常回复并告知用户）
-- 自动放行图片提交闸门：pi-ai 路由使用可还原的 `modelOverrides`，`deepseek-official` 等其他适配器使用进程内能力兼容层
+- 通过进程内能力兼容层放行图片提交闸门，支持 pi-ai、`deepseek-official` 等不同适配器，不修改用户的模型目录
 
 ## 系统支持
 
@@ -70,7 +70,7 @@ $uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-v
 >
 > `mainProvider/mainModels` 只用于指定要接管的纯文本主模型，不是识图模型；已有配置无需重复填写，没有配置时请按下方“配置”章节设置。
 >
-> 旧版安装若检测到没有 `gateState` 的图片闸门，卸载脚本会主动中止，避免旧图片会话在卸载后报错；请先按提示恢复配置。
+> 卸载只处理非空 `gateState` 能证明属于插件的旧版闸门记录，不会扫描或修改用户及其他插件的图片模型配置。
 
 ## 手动安装
 
@@ -133,7 +133,7 @@ vision-opencode:
 ## 手动卸载（高级）
 
 ```bash
-# 1. 在 dsh 运行时执行一次自清理：清空本插件的 settings、移除它写入的 modelOverrides
+# 1. 在 dsh 运行时执行一次自清理：清空插件 settings，并还原旧版本拥有的 modelOverrides
 curl -X POST -H 'x-vision-opencode-action: uninstall' http://127.0.0.1:3080/vision-opencode/uninstall
 
 # 2. 停止 dsh（Ctrl+C）
@@ -148,7 +148,7 @@ pnpm remove dsh-vision-opencode
 
 > 第 1 步执行后 `settings.yaml` 可能残留一行 `vision-opencode: {}`（插件 settings 清空后的占位），无害；第 3 步可顺手删除。用一键卸载脚本则无需关心，脚本会一并清掉。
 
-**如果跳过第 1 步**：settings 里残留的 `modelOverrides` 会让纯文本主模型"谎称"支持图片，之后发送图片会直接打到真实 API 报错。请手动还原 `settings.yaml` 中对应的 `input` 字段，或带上方请求头调用 `/vision-opencode/uninstall` 后再重启。由 0.2.x 升级而来且尚无隐藏 `gateState` 的旧条目无法证明所有权，0.3.x 不会冒险删除，请按实际原值手动清理一次。
+当前版本不会新建 `modelOverrides`。若从旧版本升级且仍有非空 `gateState`，请保持 dsh 运行并先执行第 1 步；卸载脚本不会按名称猜测或删除无所有权记录的用户配置。
 
 </details>
 
@@ -177,7 +177,7 @@ pnpm remove dsh-vision-opencode
 - 前端选择器是手写的 DSH client bundle（`window.__ModuleLoader__` 格式），client 接口在 rc 版本间可能变动；选择器不出现时打开浏览器控制台把报错发 issue。
 - 自动转换发生在请求时刻，分析文本不进持久化会话日志（会话压缩后仍可存活，因为压缩请求同样经过转换瀑布）。
 - `deepseek-official` 等非 pi-ai 主路由依赖 DSH 当前的 `resolveModelInfo()` 运行时接口；若未来 DSH 改变图片提交闸门实现，需要同步升级插件。
-- 0.2.x 没有闸门所有权记录；首次升级时若存在旧 `modelOverrides`，需要用户确认后手动清理，插件不会按模型名猜测删除。
+- 0.2.x 没有闸门所有权记录；无法证明归属的历史 `modelOverrides` 需要用户按实际原值确认，插件不会按模型名猜测删除。
 
 ## License
 

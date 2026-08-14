@@ -28,6 +28,15 @@ function Test-PackageDependency($Package, [string]$Name) {
   }
   return $false
 }
+function Test-VisionGateState([string]$Text) {
+  $inside = $false
+  foreach ($line in [regex]::Split($Text, '\r?\n')) {
+    if ($line -match '^vision-opencode:') { $inside = $true; continue }
+    if ($inside -and $line -match '^\S') { $inside = $false }
+    if ($inside -and $line -match '^  gateState:\s*\S') { return $true }
+  }
+  return $false
+}
 function Remove-VisionSettings([string]$Text) {
   $lines = @([regex]::Split($Text, '\r?\n'))
   $out = [Collections.Generic.List[string]]::new()
@@ -82,43 +91,29 @@ if ($Proxy) {
   if ($Proxy -match '^socks') { $env:all_proxy = $Proxy }
 }
 
-if (Test-Path -LiteralPath $settingsFile) {
-  $preflightSettings = [IO.File]::ReadAllText($settingsFile)
-  if ($preflightSettings -match '(?ms)modelOverrides:.*?input:.*?image' -and
-      $preflightSettings -notmatch '(?m)^  gateState:\s*\S') {
-    throw 'Uninstall stopped: settings.yaml contains image modelOverrides without a gateState ownership record. Restore the affected input values manually, or reinstall the current plugin before uninstalling again.'
-  }
-}
-
 $cleanedByEndpoint = $false
 $gateRemoved = $null
 $requestOptions = @{ TimeoutSec = 3; ErrorAction = 'Stop' }
 try {
-  [void](Invoke-RestMethod -Uri "$endpoint/config" @requestOptions)
+  $configResult = Invoke-RestMethod -Uri "$endpoint/config" @requestOptions
+  if ($configResult -is [string] -or
+      -not $configResult.PSObject.Properties['autoConvert'] -or
+      -not $configResult.PSObject.Properties['mainModels']) {
+    throw 'The config endpoint did not return vision-opencode JSON'
+  }
   Write-Info "DSH is running; calling $endpoint/uninstall"
   $postOptions = @{ Uri = "$endpoint/uninstall"; Method = 'Post'; Headers = @{ 'x-vision-opencode-action' = 'uninstall' }; TimeoutSec = 30; ErrorAction = 'Stop' }
   $result = Invoke-RestMethod @postOptions
   $cleanedByEndpoint = $true
   $gateRemoved = $result.gateOverridesRemoved
   $result | ConvertTo-Json -Compress | Write-Host
-  $removedCount = if ($null -eq $gateRemoved) { 0 } else { [int]$gateRemoved }
-  if ($removedCount -eq 0 -and (Test-Path -LiteralPath $settingsFile)) {
-    $residualSettings = [IO.File]::ReadAllText($settingsFile)
-    if ($residualSettings -match '(?ms)modelOverrides:.*?input:.*?image') {
-      throw 'Uninstall stopped: settings.yaml contains image modelOverrides whose ownership cannot be proven. Restore the affected input values manually, then retry.'
-    }
-  }
 } catch {
-  if ($_.Exception.Message -like 'Uninstall stopped:*') { throw }
   Write-Warning 'DSH is not running, the port is wrong, or runtime cleanup failed. Local files will still be removed.'
-  Write-Warning 'Any plugin-owned llm-pi-ai modelOverrides must be restored manually, or rerun this script while DSH is running.'
 }
 
-if (-not $cleanedByEndpoint -and (Test-Path -LiteralPath $settingsFile)) {
-  $residualSettings = [IO.File]::ReadAllText($settingsFile)
-  if ($residualSettings -match '(?ms)modelOverrides:.*?input:.*?image') {
-    throw 'Uninstall stopped: runtime cleanup did not run and settings.yaml may contain image modelOverrides. Start dsh, let the plugin clean itself, then retry.'
-  }
+if ((Test-Path -LiteralPath $settingsFile) -and
+    (Test-VisionGateState ([IO.File]::ReadAllText($settingsFile)))) {
+  throw 'Uninstall stopped: settings.yaml still contains this plugin''s gateState ownership record. Start dsh and retry so the plugin can restore its legacy modelOverrides first.'
 }
 
 if (Test-Path -LiteralPath $settingsFile) {
@@ -148,7 +143,7 @@ Write-Host ''
 Write-Host 'Uninstall complete. Restart dsh.'
 if ($cleanedByEndpoint) {
   $removedCount = if ($null -eq $gateRemoved) { 0 } else { $gateRemoved }
-  Write-Host "Runtime cleanup restored $removedCount plugin-owned modelOverrides."
+  Write-Host "Runtime cleanup restored $removedCount legacy plugin-owned modelOverrides. User and third-party image settings were preserved."
 } else {
-  Write-Host 'Verify that no plugin-added llm-pi-ai modelOverrides remain before sending images.'
+  Write-Host 'No plugin ownership record was found; no llm-pi-ai modelOverrides were changed.'
 }

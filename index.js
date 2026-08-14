@@ -7,14 +7,14 @@
 // 2. 注册 settings namespace `vision-opencode`：
 //      provider/model 识图模型路由
 //      autoConvert      llm/stream 瀑布开关（发图自动转换的稳定性逃生阀）
-//      mainProvider/mainModels  自动放行图片提交闸门的纯文本主模型 id
+//      mainProvider/mainModels  由运行时兼容层放行并转换的纯文本主模型 id
 // 3. llm/stream 瀑布：含图请求先由识图模型分析成文本再交给主模型；
 //    超时+重试+降级占位，识图不可用不影响主模型回合。
 // 4. web 模式注册 HTTP 端点：
 //      GET  /vision-opencode/config      当前配置
 //      PUT  /vision-opencode/config      更新识图模型（校验真实 vision 能力）
 //      GET  /vision-opencode/models      可识图模型列表（供应商目录）
-//      POST /vision-opencode/uninstall   卸载前自清理（settings + modelOverrides）
+//      POST /vision-opencode/uninstall   卸载前自清理（settings + 旧版 modelOverrides）
 //    前端"识图模型"选择器通过它们读写配置。
 import { basename, extname } from 'node:path';
 import z from '@deepseek-ai/schemastery';
@@ -23,12 +23,11 @@ import { BlockAssembler, createUserMessage, freezeMessage } from '@deepseek-ai/d
 import { settingsNamespace } from '@deepseek-ai/dsh-settings';
 import {
   PLUGIN_IMAGE_INPUT,
-  activateGateClaims,
   countImages,
   countUniqueImages,
+  gateClaimKey,
   installImageAdmissionOverride,
   isManagedMainRoute,
-  planGateOverrides,
   replaceImagesWithText,
   sameStringArray,
   visionCacheKey,
@@ -58,11 +57,11 @@ const Config = z.object({
   model: z.string().default(''),
   /** llm/stream 瀑布开关：false 时停用「发图自动转换」，只保留工具与选择器（稳定性逃生阀）。 */
   autoConvert: z.boolean().default(true),
-  /** 主模型所在供应商路由（pi-ai 适配器名下）。空 = 不自动管理图片提交闸门。 */
+  /** 主模型所在供应商路由。空 = 不接管图片提交。 */
   mainProvider: z.string().default(''),
-  /** 需要声明 image 输入的纯文本主模型 id 列表；插件自动写入 llm-pi-ai 的 modelOverrides。 */
+  /** 需要由识图模型转换图片的纯文本主模型 id 列表。 */
   mainModels: z.array(z.string()).default([]),
-  /** 插件修改 modelOverrides 前保存的 input；隐藏字段，用于卸载时精确恢复。 */
+  /** 旧版本修改 modelOverrides 前保存的 input；仅用于升级/卸载时精确恢复。 */
   gateState: z.string().default('').hidden(),
 });
 
@@ -131,6 +130,9 @@ export function apply(ctx, entry) {
     return value;
   };
   const managedRoute = (provider, model) => isManagedMainRoute(options(), provider, model);
+  const nativeVisionRoutes = new Set();
+  const managedTextRoute = (provider, model) => managedRoute(provider, model)
+    && !nativeVisionRoutes.has(gateClaimKey(provider, model));
 
   // dsh-host-apiproxy checks resolveModelInfo before llm/stream runs. Some
   // providers (notably dsh-llm-deepseek) are not backed by llm-pi-ai, so their
@@ -139,7 +141,18 @@ export function apply(ctx, entry) {
   const llmRuntime = ctx.get('llm');
   if (llmRuntime !== void 0 && typeof llmRuntime.resolveModelInfo === 'function') {
     try {
-      const restoreImageAdmission = installImageAdmissionOverride(llmRuntime, managedRoute);
+      const restoreImageAdmission = installImageAdmissionOverride(
+        llmRuntime,
+        managedRoute,
+        (provider, model, info) => {
+          const key = gateClaimKey(provider, model);
+          if (Array.isArray(info?.inputModalities) && info.inputModalities.includes('image')) {
+            nativeVisionRoutes.add(key);
+          } else {
+            nativeVisionRoutes.delete(key);
+          }
+        },
+      );
       ctx.effect(() => restoreImageAdmission);
     } catch (error) {
       ctx.logger.warn('vision-opencode: 无法安装图片提交闸门兼容层；非 llm-pi-ai 主模型可能仍会被 DSH 拒绝', error);
@@ -154,13 +167,13 @@ export function apply(ctx, entry) {
     sctx.effect(() => () => {
       current = () => entry;
     });
-    // 启动时确保图片提交闸门放行（幂等、尽力而为）
+    // 启动时迁移并还原旧版本的持久化图片闸门（幂等、尽力而为）
     void ensureGateOverrides();
   });
 
   // ---- 结构性拦截：执行前拒绝内置 read_image，防止真实图片进入纯文本主模型上下文 ----
-  // 背景：本插件为放行图片提交闸门，把纯文本主模型在 llm-pi-ai 里声明成了
-  // "支持图片输入"，副作用是内置 read_image 的自身门禁也放行了——模型一旦
+  // 背景：运行时兼容层会让配置的纯文本主模型临时声明“支持图片输入”，
+  // 副作用是内置 read_image 的自身门禁也会放行——模型一旦
   // 调用它，工具结果会把真实 image 块注入上下文，上游纯文本 API 直接
   // 400 INVALID_REQUEST。用 tools.guard 在"执行前"拒绝（结构上图片永不
   // 进入上下文），拒绝原因会作为工具结果交给模型，引导它改用 vision_read_image。
@@ -176,7 +189,7 @@ export function apply(ctx, entry) {
       provider = void 0;
       model = void 0;
     }
-    if (!managedRoute(provider, model)) return;
+    if (!managedTextRoute(provider, model)) return;
     return `read_image is blocked for the configured text-only main model (${provider}/${model}): a real image block would make the provider reject the request. Load the vision-image-analysis skill when available, then use vision_read_image to receive a text analysis.`;
   });
 
@@ -315,11 +328,9 @@ export function apply(ctx, entry) {
     }), 'vision-opencode: runtime skill');
   });
 
-  // ---- 图片提交闸门的自动管理（安装即生效、卸载可还原）----
-  // 纯文本主模型默认会被 dsh-host-apiproxy 的提交闸门拒绝图片消息。
-  // 这里按配置把主模型 id 写进 llm-pi-ai 的 modelOverrides（声明 image 输入），
-  // 放行闸门；真正的图片永远不会到达主模型——llm/stream 瀑布会先替换成文本。
-  // 写入走 settings 服务的深合并补丁，只动 modelOverrides 键，幂等、尽力而为。
+  // ---- 旧版持久化闸门迁移 ----
+  // 0.3.2 及更早版本曾写入 llm-pi-ai.modelOverrides。当前版本统一使用
+  // resolveModelInfo 运行时兼容层；这里仅精确还原 gateState 证明属于插件的旧值。
 
   function decodeGateState(raw) {
     if (raw.length === 0) return [];
@@ -339,9 +350,6 @@ export function apply(ctx, entry) {
     }
   }
 
-  const encodeGateState = (claims) => claims.length === 0
-    ? ''
-    : Buffer.from(JSON.stringify(claims), 'utf8').toString('base64url');
   function modelOverride(root, providerName, modelId) {
     if (root === null || typeof root !== 'object') return void 0;
     return root.providers?.[providerName]?.modelOverrides?.[modelId];
@@ -358,62 +366,23 @@ export function apply(ctx, entry) {
     }
   }
 
-  /** 确保已配置文本主路由放行图片提交，并精确记录本插件拥有的 input 改动。 */
+  /** 升级清理：还原旧版本写入的 modelOverrides；新版本只使用运行时兼容层。 */
   async function ensureGateOverrides(attempt = 1) {
     const cfg = options();
     if (settingsService === void 0) return;
+    const claims = decodeGateState(cfg.gateState);
+    if (claims.length === 0) return;
     try {
-      const descriptor = settingsService.describe().find((item) => item.ns === 'llm-pi-ai');
-      if (descriptor === void 0) throw new Error('llm-pi-ai settings namespace is unavailable');
-      const claims = decodeGateState(cfg.gateState);
-      const piProvider = descriptor.user?.providers?.[cfg.mainProvider]
-        ?? descriptor.value?.providers?.[cfg.mainProvider];
-      if (cfg.mainProvider.length > 0 && piProvider === void 0) {
-        // Providers owned by another adapter (for example deepseek-official)
-        // cannot be declared through llm-pi-ai.modelOverrides. Admission is
-        // handled by the resolveModelInfo compatibility layer above instead.
-        if (claims.length > 0) await removeGateOverrides();
-        if (cfg.gateState.length > 0) await settingsScope?.update({ gateState: '' });
-        ctx.logger.info(`vision-opencode: ${cfg.mainProvider} 由其他适配器提供，使用运行时图片闸门兼容层`);
-        return;
-      }
-      const plan = planGateOverrides(cfg, claims, descriptor.user, descriptor.value);
-
-      // 配置中已移除的路由先按原值还原；如果用户后来改过 input，则只释放所有权。
-      let llmRevision = descriptor.revision;
-      if (plan.restored > 0) {
-        await settingsService.replace('llm-pi-ai', plan.user, llmRevision);
-        llmRevision += 1;
-      }
-      for (const route of plan.released) {
-        ctx.logger.warn(`vision-opencode: 检测到 ${route.provider}/${route.model} 的 input 已被外部修改，已停止管理该闸门`);
-      }
-
-      // 所有权必须先落盘；即使下一步进程退出，重启后也能继续写入或安全还原。
-      if (encodeGateState(plan.claims) !== encodeGateState(claims)) {
-        await settingsScope?.update({ gateState: encodeGateState(plan.claims) });
-      }
-      if (plan.desiredModels.length > 0) {
-        await settingsService.update('llm-pi-ai', {
-          providers: {
-            [cfg.mainProvider]: {
-              modelOverrides: Object.fromEntries(plan.desiredModels.map((id) => [id, { input: [...PLUGIN_IMAGE_INPUT] }])),
-            },
-          },
-        }, llmRevision);
-        const activeClaims = activateGateClaims(plan.claims, cfg.mainProvider, plan.desiredModels);
-        if (encodeGateState(activeClaims) !== encodeGateState(plan.claims)) {
-          await settingsScope?.update({ gateState: encodeGateState(activeClaims) });
-        }
-        ctx.logger.info(`vision-opencode: 已为主模型放行图片提交闸门（${cfg.mainProvider}: ${plan.desiredModels.join(', ')}）`);
-      }
+      const restored = await removeGateOverrides();
+      await settingsScope?.update({ gateState: '' });
+      ctx.logger.info(`vision-opencode: 已迁移旧版图片闸门配置（还原 ${restored} 条 modelOverrides）`);
     } catch (error) {
       if (attempt < 2) {
         setTimeout(() => { void ensureGateOverrides(attempt + 1); }, 3000);
         return;
       }
       ctx.logger.warn(
-        `vision-opencode: 自动配置 modelOverrides 失败（llm-pi-ai 未注册或版本不同）。请手动在 settings.yaml 添加 llm-pi-ai.providers.${cfg.mainProvider}.modelOverrides，否则向纯文本主模型发送图片会被提交闸门拒绝`,
+        'vision-opencode: 旧版 modelOverrides 自动还原失败；保留 gateState，卸载前请重启后重试',
         error,
       );
     }
@@ -428,7 +397,8 @@ export function apply(ctx, entry) {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const descriptor = settingsService.describe().find((entry) => entry.ns === 'llm-pi-ai');
-        if (descriptor === void 0 || descriptor.user === void 0 || descriptor.user === null || typeof descriptor.user !== 'object') return 0;
+        if (descriptor === void 0) throw new Error('llm-pi-ai settings namespace is unavailable');
+        if (descriptor.user === void 0 || descriptor.user === null || typeof descriptor.user !== 'object') return 0;
         const next = structuredClone(descriptor.user);
         let removed = 0;
         for (const claim of claims) {
@@ -439,13 +409,11 @@ export function apply(ctx, entry) {
           pruneEmptyOverride(next, claim.provider, claim.model);
           removed += 1;
         }
-        if (removed === 0) return 0;
-        await settingsService.replace('llm-pi-ai', next, descriptor.revision);
+        if (removed > 0) await settingsService.replace('llm-pi-ai', next, descriptor.revision);
         return removed;
       } catch (error) {
         if (error?.name === 'SettingsConflictError' && attempt < 3) continue;
-        ctx.logger.warn('vision-opencode: 移除 modelOverrides 失败；请手动删除 settings.yaml 中 llm-pi-ai.providers.<provider>.modelOverrides 的本插件条目', error);
-        return 0;
+        throw error;
       }
     }
     return 0;
@@ -454,9 +422,8 @@ export function apply(ctx, entry) {
   // ---- llm/stream 瀑布：含图片的请求自动转成识图模型的分析文本 ----
   // 背景：主模型（如 deepseek-v4-pro）是纯文本，而消息提交闸门
   // （dsh-host-apiproxy）在模型未声明 image 输入时直接拒绝图片消息。
-  // 配合 settings 的 llm-pi-ai.providers.opencode-go.modelOverrides
-  // （把主模型 input 声明为含 image 以放行闸门），这里在真正的模型调用
-  // 之前把每个 image block 替换为识图模型的分析文本：
+  // 运行时兼容层先通过 DSH 的图片提交闸门；这里在真正的模型调用之前
+  // 把每个 image block 替换为识图模型的分析文本：
   //   - 用户发送的图片永远不会进入主模型上下文
   //   - 会话历史仍保留原始图片（UI 可见），模型侧只见文本
   //   - 同一张图（attachmentId = sha256）只在进程内分析一次
@@ -638,7 +605,7 @@ export function apply(ctx, entry) {
     const route = options();
     // 只接管用户明确列入 mainProvider/mainModels 的文本主路由。
     // 其他供应商、其他模型（尤其原生多模态主模型）完整保留 DSH 的原生图片链路。
-    if (!managedRoute(llmOptions.provider, llmOptions.model)) return next();
+    if (!managedTextRoute(llmOptions.provider, llmOptions.model)) return next();
     const messages = Array.isArray(llmOptions.messages) ? llmOptions.messages : [];
     const seenAttachmentIds = new Set();
     const imageCount = messages.reduce((total, message) => total
@@ -819,7 +786,7 @@ export function apply(ctx, entry) {
             } catch {
               declaredVision = false;
             }
-            if (managedRoute(provider, model) || !declaredVision) {
+            if (managedTextRoute(provider, model) || !declaredVision) {
               json(res, 400, { error: `model "${provider}/${model}" is not a vision-capable model` });
               return;
             }
@@ -857,8 +824,7 @@ export function apply(ctx, entry) {
               const models = await ctx.llm.listModels(provider.id);
               const vision = models.filter((model) =>
                 Array.isArray(model.inputModalities)
-                && model.inputModalities.includes('image')
-                && !managedRoute(provider.id, model.id));
+                && model.inputModalities.includes('image'));
               if (vision.length === 0) continue;
               groups.push({
                 provider: provider.id,
@@ -892,10 +858,10 @@ export function apply(ctx, entry) {
             return;
           }
           // 卸载前自清理：清空本插件自己的 settings 用户层，
-          // 并移除本插件写入的 llm-pi-ai modelOverrides（含 revision 防冲突）。
+          // 并还原旧版本写入的 llm-pi-ai modelOverrides（含 revision 防冲突）。
           // 必须先移除 modelOverrides 再清空本插件 settings：
-          // removeGateOverrides 依赖当前配置（mainProvider/mainModels）
-          // 定位条目，清空之后配置就只剩默认值了。
+          // removeGateOverrides 依赖 gateState 中的所有权记录；清空之后
+          // 就无法再精确定位和还原旧版本写入的条目。
           const overridesRemoved = await removeGateOverrides();
           let ownCleared = false;
           if (settingsScope !== void 0) {

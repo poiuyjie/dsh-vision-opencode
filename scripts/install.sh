@@ -84,43 +84,8 @@ fi
 
 [ -d "$PROFILE_DIR" ] || mkdir -p "$PROFILE_DIR"
 [ -f "$PROFILE_DIR/package.json" ] || die "$PROFILE_DIR 不是 dsh profile 目录（缺少 package.json）"
-cd "$PROFILE_DIR"
 
-# ---- 1. 安装或升级依赖 ----
-PNPM_WORKSPACE_ARGS=()
-if [ -f pnpm-workspace.yaml ]; then
-  PNPM_WORKSPACE_ARGS=(-w)
-fi
-if grep -q '"dsh-vision-opencode"[[:space:]]*:' package.json; then
-  # GitHub branch 依赖会被锁到具体 commit；必须显式 update 才能取得新版本。
-  info "依赖已存在，升级到仓库最新版本"
-  pnpm update "${PNPM_WORKSPACE_ARGS[@]}" dsh-vision-opencode
-else
-  # DSH 新版 profile 目录自带 pnpm-workspace.yaml（packages: [.]），是 pnpm 工作区根：
-  # 直接 pnpm add 会报 ERR_PNPM_ADDING_TO_ROOT，必须 -w 显式装到根。
-  info "安装依赖: pnpm add ${PNPM_WORKSPACE_ARGS[*]} $REPO_SPEC"
-  pnpm add "${PNPM_WORKSPACE_ARGS[@]}" "$REPO_SPEC"
-fi
-
-# ---- 2. 注册 cordis.patch.yml 条目（幂等：已有 id: vision-opencode 则跳过）----
-touch cordis.patch.yml
-# 空数组占位（卸载脚本收尾产物或历史遗留）不能与条目共存：
-# "[]" 之后跟 "- insert:" 会被 YAML 当成两个文档，dsh 启动直接报错。
-# 无论是否已有本插件条目，先清掉占位行（同时自愈旧的坏文件）。
-if grep -Eq '^\s*\[\s*\]\s*$' cordis.patch.yml; then
-  sed -i '/^\s*\[\s*\]\s*$/d' cordis.patch.yml
-  info "已移除 cordis.patch.yml 的空数组占位"
-fi
-if grep -Eq '^[[:space:]]*- id: vision-opencode[[:space:]]*$' cordis.patch.yml; then
-  info "cordis.patch.yml 条目已存在，跳过"
-else
-  info "向 cordis.patch.yml 追加注册条目"
-  {
-    printf '\n- insert:\n    - id: vision-opencode\n      name: %s\n' "'dsh-vision-opencode'"
-  } >> cordis.patch.yml
-fi
-
-# ---- 3. 写 settings.yaml 的 vision-opencode 段（幂等 + 合并）----
+# ---- 1. 读取并校验 settings（失败时不产生安装副作用）----
 # 段已存在时：命令行参数覆盖对应键，未传的参数继承现有值，然后整段重写；
 # 段不存在时直接追加。全程不会产生重复键。
 extract_key() {
@@ -205,6 +170,36 @@ if [ ${#MAIN_MODELS[@]} -gt 0 ] && [ -z "$MAIN_PROVIDER" ]; then
   die "使用 --main-model 时必须提供 --main-provider（或让脚本从已有配置继承）"
 fi
 
+# ---- 2. 安装或升级依赖 ----
+cd "$PROFILE_DIR"
+PNPM_WORKSPACE_ARGS=()
+if [ -f pnpm-workspace.yaml ]; then
+  PNPM_WORKSPACE_ARGS=(-w)
+fi
+if grep -q '"dsh-vision-opencode"[[:space:]]*:' package.json; then
+  # GitHub branch 依赖会被锁到具体 commit；必须显式 update 才能取得新版本。
+  info "依赖已存在，升级到仓库最新版本"
+  pnpm update "${PNPM_WORKSPACE_ARGS[@]}" dsh-vision-opencode
+else
+  # DSH 新版 profile 目录自带 pnpm-workspace.yaml（packages: [.]），是 pnpm 工作区根：
+  # 直接 pnpm add 会报 ERR_PNPM_ADDING_TO_ROOT，必须 -w 显式装到根。
+  info "安装依赖: pnpm add ${PNPM_WORKSPACE_ARGS[*]} $REPO_SPEC"
+  pnpm add "${PNPM_WORKSPACE_ARGS[@]}" "$REPO_SPEC"
+fi
+
+# ---- 3. 注册 cordis.patch.yml 条目（幂等）----
+touch cordis.patch.yml
+if grep -Eq '^\s*\[\s*\]\s*$' cordis.patch.yml; then
+  sed -i '/^\s*\[\s*\]\s*$/d' cordis.patch.yml
+  info "已移除 cordis.patch.yml 的空数组占位"
+fi
+if grep -Eq '^[[:space:]]*- id: vision-opencode[[:space:]]*$' cordis.patch.yml; then
+  info "cordis.patch.yml 条目已存在，跳过"
+else
+  info "向 cordis.patch.yml 追加注册条目"
+  printf '\n- insert:\n    - id: vision-opencode\n      name: %s\n' "'dsh-vision-opencode'" >> cordis.patch.yml
+fi
+
 VISION_PROVIDER_YAML="$(yaml_quote "$VISION_PROVIDER")"
 VISION_MODEL_YAML="$(yaml_quote "$VISION_MODEL")"
 MAIN_PROVIDER_YAML="$(yaml_quote "$MAIN_PROVIDER")"
@@ -235,6 +230,7 @@ if [ -n "$GATE_STATE" ]; then
   gateState: $GATE_STATE"
 fi
 
+# ---- 4. 写 settings.yaml 的 vision-opencode 段（幂等 + 合并）----
 export SETTINGS_BLOCK SETTINGS_FILE
 node <<'NODE'
 const fs = require('fs');
@@ -268,7 +264,7 @@ fs.writeFileSync(file, text);
 console.log(`→ 已写入 settings.yaml 的 vision-opencode 段（${file}）`);
 NODE
 
-# ---- 4. 完成 ----
+# ---- 5. 完成 ----
 cat <<EOF
 
 ✅ 安装完成。剩余一步：

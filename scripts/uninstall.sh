@@ -12,7 +12,7 @@
 #
 # 流程：
 #   1. dsh 正在运行时：调用 POST /vision-opencode/uninstall 自清理
-#      （清空插件 settings + 还原 llm-pi-ai.modelOverrides，这是最安全的方式）
+#      （清空插件 settings + 还原旧版本拥有的 llm-pi-ai.modelOverrides）
 #   2. 移除 settings.yaml 的 vision-opencode 段（best-effort；该段在插件卸载后本身无害）
 #   3. 移除 cordis.patch.yml 的注册条目
 #   4. pnpm remove 依赖
@@ -30,14 +30,18 @@ PROXY=""
 die() { echo "✗ $*" >&2; exit 1; }
 info() { echo "→ $*"; }
 
-has_image_override() {
+has_gate_state() {
   [ -f "$1" ] || return 1
   awk '
-    /modelOverrides:/ { inside=1; next }
+    /^vision-opencode:/ { inside=1; next }
     inside && /^[^ ]/ { inside=0 }
-    inside && /(^|[[:space:]])image([[:space:]]|$)/ { found=1 }
+    inside && /^  gateState:[[:space:]]*[^[:space:]]/ { found=1 }
     END { exit found ? 0 : 1 }
   ' "$1"
+}
+
+is_plugin_config() {
+  node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const v=JSON.parse(s);process.exit(v&&typeof v==="object"&&Object.hasOwn(v,"autoConvert")&&Array.isArray(v.mainModels)?0:1)}catch{process.exit(1)}})'
 }
 
 require_value() {
@@ -75,26 +79,20 @@ fi
 
 ENDPOINT="http://127.0.0.1:$PORT/vision-opencode"
 
-# Legacy installs may have opened the image gate without an ownership record.
-# Refuse to clear plugin settings first; otherwise the user is left in a half-uninstalled state.
-if has_image_override "$SETTINGS_FILE" \
-  && ! grep -Eq '^  gateState:[[:space:]]*[^[:space:]]' "$SETTINGS_FILE"; then
-  die "检测到没有 gateState 所有权记录的图片 modelOverrides，已中止卸载。请先手动恢复对应 input，或重新安装新版插件后再卸载。"
-fi
-
 # ---- 1. dsh 运行时：插件自清理（还原 modelOverrides，最安全）----
 CLEANED_BY_ENDPOINT=0
-if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 3 "$ENDPOINT/config" >/dev/null 2>&1; then
+CONFIG_RESULT=""
+if command -v curl >/dev/null 2>&1; then
+  CONFIG_RESULT=$(curl -fsS --max-time 3 "$ENDPOINT/config" 2>/dev/null || true)
+fi
+if [ -n "$CONFIG_RESULT" ] && printf '%s' "$CONFIG_RESULT" | is_plugin_config; then
   info "dsh 正在运行，调用插件自清理端点 POST $ENDPOINT/uninstall"
   if RESULT=$(curl -fsS --max-time 30 -X POST -H 'x-vision-opencode-action: uninstall' "$ENDPOINT/uninstall" 2>/dev/null); then
     echo "$RESULT"
     CLEANED_BY_ENDPOINT=1
     GATE_REMOVED=$(printf '%s' "$RESULT" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{try{const n=JSON.parse(s).gateOverridesRemoved;process.stdout.write(typeof n==="number"?String(n):"")}catch{}})')
-    if [ "${GATE_REMOVED:-0}" = "0" ] && has_image_override "$SETTINGS_FILE"; then
-      die "检测到未能由插件证明所有权的图片 modelOverrides，已中止卸载。请先手动恢复对应 input，确认 settings.yaml 不再包含该残留后重试。"
-    fi
   else
-    echo "⚠ 自清理端点调用失败（插件可能还是旧版本，没有 /uninstall 端点）；继续本地清理，但 llm-pi-ai.modelOverrides 需要手动处理（见末尾提示）"
+    echo "⚠ 自清理端点调用失败（插件可能还是旧版本，没有 /uninstall 端点）；将检查是否存在 gateState 所有权记录"
   fi
 else
   if ! command -v curl >/dev/null 2>&1; then
@@ -102,14 +100,13 @@ else
   fi
   cat <<EOF
 ⚠ dsh 未运行（或 web 端口不对）：跳过插件自清理。
-  如果 settings.yaml 的 llm-pi-ai.providers.*.modelOverrides 里有本插件添加的条目
-  （纯文本主模型声明了 input: [text, image]），请手动删除，否则卸载后发图片会打到真实 API 报错。
-  更稳妥的做法：先启动 dsh 再重新执行本脚本，让插件自清理。
+  若 settings.yaml 中仍有非空 gateState，脚本会中止并要求先启动 dsh 完成精确还原。
+  没有所有权记录时，脚本不会猜测或修改任何用户/第三方 modelOverrides。
 EOF
 fi
 
-if [ "$CLEANED_BY_ENDPOINT" = "0" ] && has_image_override "$SETTINGS_FILE"; then
-  die "未能运行插件自清理，且 settings.yaml 可能包含图片 modelOverrides；为避免卸载后破坏旧会话，已中止。请启动 dsh 完成自清理后重试。"
+if has_gate_state "$SETTINGS_FILE"; then
+  die "settings.yaml 仍包含本插件的 gateState 所有权记录，已中止卸载。请启动 dsh 并确认端口后重试，让插件先精确还原旧版 modelOverrides。"
 fi
 
 # ---- 2. 移除 settings.yaml 的 vision-opencode 段（幂等；该段本身无害）----
@@ -207,13 +204,9 @@ fi
 
 # ---- 5. 完成 ----
 if [ "$CLEANED_BY_ENDPOINT" = "1" ]; then
-  if [ -z "${GATE_REMOVED:-}" ] || [ "$GATE_REMOVED" = "0" ]; then
-    FINAL_NOTE="   插件端点已自清理（移除 ${GATE_REMOVED:-0} 条 modelOverrides）。若 settings.yaml 里 llm-pi-ai.*.modelOverrides 仍有残留，请手动删除后再重启。"
-  else
-    FINAL_NOTE="   已由插件端点自清理 modelOverrides（移除 $GATE_REMOVED 条）。"
-  fi
+  FINAL_NOTE="   插件端点已自清理（还原 ${GATE_REMOVED:-0} 条旧版 modelOverrides）。用户及其他插件的图片配置保持不变。"
 else
-  FINAL_NOTE="   注意：确认 settings.yaml 里没有残留的 llm-pi-ai modelOverrides（见上方提示）。"
+  FINAL_NOTE="   未发现插件所有权记录；卸载器未修改任何 llm-pi-ai modelOverrides。"
 fi
 
 cat <<EOF
