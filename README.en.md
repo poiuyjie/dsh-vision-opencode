@@ -32,48 +32,42 @@ Native installers are provided for both supported environments:
 
 Both variants implement the same configuration merge, Cordis registration, idempotent update, and uninstall cleanup behavior. macOS and other distributions remain unverified.
 
-### Ubuntu
-
-```bash
-git clone https://github.com/poiuyjie/dsh-vision-opencode
-```
-
 > Compatibility: built and verified against **DSH `0.1.0-rc.6`**. It relies on two undocumented runtime behaviors — agent-loop requests deep-frozen in the `llm/stream` waterfall, and cordis waterfall `next()` replaying original arguments. If DSH behavior changes in a later rc, upgrade this plugin or turn off the `autoConvert` escape hatch (see below).
 
 ## One-click Install / Uninstall
 
 ```bash
-# Install (idempotent, safe to re-run; restart dsh afterwards)
-# No vision model is preset: without --vision-*, pick one after install from the
-# "识图模型" dropdown next to the input box (it lists image-capable models across
-# all your providers; --vision-* is optional, to pin a specific vision model)
 curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.sh | bash -s -- \
-  --main-provider opencode-go --main-model deepseek-v4-pro --main-model deepseek-v4-flash \
-  --proxy http://127.0.0.1:7897
-
-# Uninstall (running it while dsh is up auto-restores modelOverrides; also idempotent)
-curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.sh | bash
+  --main-provider opencode-go --main-model deepseek-v4-pro --main-model deepseek-v4-flash
 ```
 
 ### Windows PowerShell
 
 ```powershell
-# Install; -MainModel accepts one or more text-only main models
 $install = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.ps1'
 & ([scriptblock]::Create($install)) `
   -MainProvider 'opencode-go' `
   -MainModel @('deepseek-v4-pro', 'deepseek-v4-flash')
+```
 
-# Uninstall while dsh web is running to restore plugin-owned modelOverrides
+Restart `dsh` after installation, then choose a vision model next to the composer.
+
+### Uninstall
+
+Ubuntu:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.sh | bash
+```
+
+Windows PowerShell:
+
+```powershell
 $uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.ps1'
 & ([scriptblock]::Create($uninstall))
 ```
 
-- Bash uses `--vision-provider` / `--vision-model` and `--main-provider` / `--main-model`; PowerShell uses `-VisionProvider` / `-VisionModel` and `-MainProvider` / `-MainModel`.
-- Vision-model arguments are optional; omit them and select a model from the composer dropdown after installation.
-- Pass `--proxy` (Bash) or `-Proxy` (PowerShell) only when GitHub/npm access requires it.
-- Main-model arguments auto-whitelist the image-submission gate; omit them and configure it manually instead (see below).
-- The scripts only touch: the profile's `package.json` dependency, the `cordis.patch.yml` registration entry, and the `vision-opencode` section in `settings.yaml`. Re-running the installer updates the GitHub dependency while preserving configuration idempotently. Uninstall prefers calling the plugin's own `/vision-opencode/uninstall` endpoint to restore `modelOverrides`; if dsh isn't running it degrades to a warning plus manual instructions.
+> No vision model is pinned by default; choose one from the dropdown after installation. Add `--proxy` or `-Proxy` only when needed.
 
 ## Manual Install
 
@@ -130,7 +124,10 @@ Chat attachments and workspace images use complementary paths. Attachments must 
 
 > `mainProvider`/`mainModels` may be left empty: the plugin then changes no config, but sending images to a text-only main model will be rejected by DSH's built-in submission gate (DSH's default safety behavior). Manually declare `input: [text, image]` for the main model under `llm-pi-ai.providers.<provider>.modelOverrides` instead.
 
-## Uninstall (self-clean first, then remove)
+<details>
+<summary>Advanced: manual uninstall</summary>
+
+## Manual Uninstall (Advanced)
 
 ```bash
 # 1. With dsh running, self-clean once: clears this plugin's settings, removes its modelOverrides
@@ -149,6 +146,8 @@ pnpm remove dsh-vision-opencode
 > After step 1, `settings.yaml` may keep a single leftover line `vision-opencode: {}` (the placeholder of cleared plugin settings) — harmless; you can delete it in step 3. The one-click uninstall script removes it for you.
 
 **If you skip step 1**: leftover `modelOverrides` can make a text-only main model claim image support and send later images to the real API. Restore the corresponding `input` field manually, or call `/vision-opencode/uninstall` with the header shown above and restart. Legacy entries upgraded from 0.2.x have no ownership record; 0.3.x intentionally will not guess-delete them, so they require one manual cleanup based on their real prior value.
+
+</details>
 
 A plugin load failure won't take DSH down: the cordis loader isolates per entry — a failed plugin shows as failed in "Settings → Plugins" while everything else keeps working.
 

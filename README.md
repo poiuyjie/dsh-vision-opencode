@@ -32,47 +32,42 @@ DeepSeek Harness（DSH）插件：给纯文本主模型加一个**可配置的�
 
 两套脚本执行相同的配置合并、Cordis 注册、幂等升级和卸载清理流程。macOS 与其他发行版尚未验证。
 
-### Ubuntu
-
-```bash
-git clone https://github.com/poiuyjie/dsh-vision-opencode
-```
-
 > 兼容性：本插件基于 **DSH `0.1.0-rc.6`** 开发并验证。它依赖两个尚未文档化的运行时行为——agent-loop 请求在 `llm/stream` 瀑布中 deep-frozen、cordis waterfall 的 `next()` 重放原始参数。DSH 升级到其他 rc 版本后如果行为变化，请升级本插件或关闭 `autoConvert` 逃生阀（见下文）。
 
 ## 一键安装 / 卸载
 
 ```bash
-# 安装（幂等，可重复执行；完成后重启 dsh 生效）
-# 识图模型不预设默认：不传 --vision-*，装好后在输入框右侧「识图模型」下拉里选
-#（下拉自动列出你所有供应商中支持图片输入的模型；--vision-* 可选，用于固定识图模型）
 curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.sh | bash -s -- \
-  --main-provider opencode-go --main-model deepseek-v4-pro --main-model deepseek-v4-flash \
-  --proxy http://127.0.0.1:7897
-
-# 卸载（dsh 运行时执行可自动还原 modelOverrides；同样幂等）
-curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.sh | bash
+  --main-provider opencode-go --main-model deepseek-v4-pro --main-model deepseek-v4-flash
 ```
 
 ### Windows PowerShell
 
 ```powershell
-# 安装；-MainModel 接受一个或多个纯文本主模型
 $install = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.ps1'
 & ([scriptblock]::Create($install)) `
   -MainProvider 'opencode-go' `
   -MainModel @('deepseek-v4-pro', 'deepseek-v4-flash')
+```
 
-# 卸载；在 dsh web 仍运行时执行，可以自动还原插件拥有的 modelOverrides
+安装后重启 `dsh`，在输入框右侧选择识图模型。
+
+### 卸载
+
+Ubuntu：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.sh | bash
+```
+
+Windows PowerShell：
+
+```powershell
 $uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/uninstall.ps1'
 & ([scriptblock]::Create($uninstall))
 ```
 
-- Bash 使用 `--vision-provider` / `--vision-model`、`--main-provider` / `--main-model`；PowerShell 对应使用 `-VisionProvider` / `-VisionModel`、`-MainProvider` / `-MainModel`。
-- 识图模型参数可选：不传则装好后在输入框右侧「识图模型」下拉里选择。
-- 代理参数仅在访问 GitHub/npm 需要代理时传：Bash 为 `--proxy`，PowerShell 为 `-Proxy`。
-- 主模型参数用于自动放行图片提交闸门；不传则需手动配置（见下）。
-- 脚本只改动：profile 的 `package.json` 依赖、`cordis.patch.yml` 注册条目、`settings.yaml` 的 `vision-opencode` 段；重复运行时会升级 GitHub 依赖并保持配置幂等，卸载时优先调用插件自带的 `/vision-opencode/uninstall` 端点还原 `modelOverrides`，dsh 未运行时降级为警告并给出手动指引。
+> 默认不固定识图模型，安装后从下拉框选择。需要代理时再追加 `--proxy` 或 `-Proxy`。
 
 ## 手动安装
 
@@ -129,7 +124,10 @@ vision-opencode:
 
 > `mainProvider`/`mainModels` 可留空：此时插件不会自动改任何配置，但向纯文本主模型发送图片会被 DSH 内置的提交闸门拒绝（这是 DSH 的默认安全行为），需要你手动在 `llm-pi-ai.providers.<provider>.modelOverrides` 里给主模型声明 `input: [text, image]`。
 
-## 卸载（先自清理，再删包）
+<details>
+<summary>高级：手动卸载</summary>
+
+## 手动卸载（高级）
 
 ```bash
 # 1. 在 dsh 运行时执行一次自清理：清空本插件的 settings、移除它写入的 modelOverrides
@@ -148,6 +146,8 @@ pnpm remove dsh-vision-opencode
 > 第 1 步执行后 `settings.yaml` 可能残留一行 `vision-opencode: {}`（插件 settings 清空后的占位），无害；第 3 步可顺手删除。用一键卸载脚本则无需关心，脚本会一并清掉。
 
 **如果跳过第 1 步**：settings 里残留的 `modelOverrides` 会让纯文本主模型"谎称"支持图片，之后发送图片会直接打到真实 API 报错。请手动还原 `settings.yaml` 中对应的 `input` 字段，或带上方请求头调用 `/vision-opencode/uninstall` 后再重启。由 0.2.x 升级而来且尚无隐藏 `gateState` 的旧条目无法证明所有权，0.3.x 不会冒险删除，请按实际原值手动清理一次。
+
+</details>
 
 插件加载失败不会拖垮 DSH：cordis loader 按条目隔离，失败的插件在「设置 → 插件」里显示 failed，其余插件照常工作。
 
