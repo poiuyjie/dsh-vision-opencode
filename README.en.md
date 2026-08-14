@@ -34,25 +34,22 @@ Both variants implement the same configuration merge, Cordis registration, idemp
 
 > Compatibility: built and verified against **DSH `0.1.0-rc.6`**. It relies on two undocumented runtime behaviors — agent-loop requests deep-frozen in the `llm/stream` waterfall, and cordis waterfall `next()` replaying original arguments. If DSH behavior changes in a later rc, upgrade this plugin or turn off the `autoConvert` escape hatch (see below).
 
-## One-click Install / Uninstall
+## One-click Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.sh | bash -s -- \
-  --main-provider opencode-go --main-model deepseek-v4-pro --main-model deepseek-v4-flash
+curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.sh | bash
 ```
 
 ### Windows PowerShell
 
 ```powershell
 $install = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.ps1'
-& ([scriptblock]::Create($install)) `
-  -MainProvider 'opencode-go' `
-  -MainModel @('deepseek-v4-pro', 'deepseek-v4-flash')
+& ([scriptblock]::Create($install))
 ```
 
-Restart `dsh` after installation, then choose a vision model next to the composer.
+Restart `dsh`, refresh the browser page, then choose a vision model next to the composer.
 
-### Uninstall
+## One-click Uninstall
 
 Ubuntu:
 
@@ -67,7 +64,9 @@ $uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-v
 & ([scriptblock]::Create($uninstall))
 ```
 
-> No vision model is pinned by default; choose one from the dropdown after installation. Add `--proxy` or `-Proxy` only when needed.
+> The installer never selects or writes a vision model. Add `--proxy` or `-Proxy` only when needed.
+>
+> `mainProvider/mainModels` only define which text-only main route to intercept; they are not vision-model selection. Keep existing settings, or configure them in the section below if needed.
 
 ## Manual Install
 

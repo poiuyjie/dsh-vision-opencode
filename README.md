@@ -34,25 +34,22 @@ DeepSeek Harness（DSH）插件：给纯文本主模型加一个**可配置的�
 
 > 兼容性：本插件基于 **DSH `0.1.0-rc.6`** 开发并验证。它依赖两个尚未文档化的运行时行为——agent-loop 请求在 `llm/stream` 瀑布中 deep-frozen、cordis waterfall 的 `next()` 重放原始参数。DSH 升级到其他 rc 版本后如果行为变化，请升级本插件或关闭 `autoConvert` 逃生阀（见下文）。
 
-## 一键安装 / 卸载
+## 一键安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.sh | bash -s -- \
-  --main-provider opencode-go --main-model deepseek-v4-pro --main-model deepseek-v4-flash
+curl -fsSL https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.sh | bash
 ```
 
 ### Windows PowerShell
 
 ```powershell
 $install = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-vision-opencode/main/scripts/install.ps1'
-& ([scriptblock]::Create($install)) `
-  -MainProvider 'opencode-go' `
-  -MainModel @('deepseek-v4-pro', 'deepseek-v4-flash')
+& ([scriptblock]::Create($install))
 ```
 
-安装后重启 `dsh`，在输入框右侧选择识图模型。
+安装后重启 `dsh`，然后刷新浏览器页面，在输入框右侧选择识图模型。
 
-### 卸载
+## 一键卸载
 
 Ubuntu：
 
@@ -67,7 +64,9 @@ $uninstall = Invoke-RestMethod 'https://raw.githubusercontent.com/poiuyjie/dsh-v
 & ([scriptblock]::Create($uninstall))
 ```
 
-> 默认不固定识图模型，安装后从下拉框选择。需要代理时再追加 `--proxy` 或 `-Proxy`。
+> 安装脚本不会选择或写入任何识图模型。需要代理时再追加 `--proxy` 或 `-Proxy`。
+>
+> `mainProvider/mainModels` 只用于指定要接管的纯文本主模型，不是识图模型；已有配置无需重复填写，没有配置时请按下方“配置”章节设置。
 
 ## 手动安装
 
