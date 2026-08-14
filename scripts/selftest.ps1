@@ -53,6 +53,16 @@ try {
     Assert-True ($removedPatch -notmatch 'id: vision-opencode') 'removes plugin Cordis entry'
     Assert-True ($removedPatch -match 'id: other-plugin') 'preserves unrelated Cordis entries'
 
+    $auto = Join-Path $temp 'auto'
+    $autoProfile = Join-Path $auto 'profiles\web'
+    [void](New-Item -ItemType Directory -Force -Path $autoProfile)
+    [IO.File]::WriteAllText((Join-Path $auto 'settings.yaml'), "agent-default-model:`n  provider: auto-provider`n  model: text-default`n", $utf8)
+    [IO.File]::WriteAllText((Join-Path $autoProfile 'package.json'), '{"dependencies":{}}', $utf8)
+    $env:DSH_HOME = $auto
+    & $install -ProfileDir $autoProfile
+    $autoSettings = [IO.File]::ReadAllText((Join-Path $auto 'settings.yaml'))
+    Assert-True ($autoSettings -match 'mainProvider: "auto-provider"' -and $autoSettings -match '    - "text-default"') 'inherits agent-default-model as main route'
+
     $legacy = Join-Path $temp 'legacy'
     $legacyProfile = Join-Path $legacy 'profiles\web'
     $legacySettingsPath = Join-Path $legacy 'settings.yaml'
@@ -81,7 +91,7 @@ try {
     $env:PATH = $oldPath
     if ($null -eq $oldDshHome) { Remove-Item Env:DSH_HOME -ErrorAction SilentlyContinue } else { $env:DSH_HOME = $oldDshHome }
   }
-  Write-Host 'PowerShell selftest: 13 passed, 0 failed'
+  Write-Host 'PowerShell selftest: 14 passed, 0 failed'
 } finally {
   if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force }
 }

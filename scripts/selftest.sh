@@ -53,6 +53,7 @@ echo "== 1. install（全新）=="
 PATH="$TMP/bin:$PATH" DSH_HOME="$TMP" bash "$HERE/install.sh" --profile-dir "$PROFILE" >/dev/null
 grep -q 'id: vision-opencode' "$PROFILE/cordis.patch.yml" && ok "cordis 条目已写入" || bad "cordis 条目缺失"
 grep -q '^vision-opencode:' "$SETTINGS" && ok "settings 段已写入" || bad "settings 段缺失"
+grep -Eq 'mainProvider: (opencode-go|"opencode-go")' "$SETTINGS" && grep -Eq '    - (deepseek-v4-pro|"deepseek-v4-pro")' "$SETTINGS" && ok "自动继承默认主路由" || bad "未自动继承默认主路由"
 ! grep -q 'mimo-v2.5' "$SETTINGS" && ok "默认不写入硬编码识图模型" || bad "默认写入了硬编码识图模型"
 grep -q '"dsh-vision-opencode"' "$PROFILE/package.json" && ok "依赖已写入" || bad "依赖缺失"
 
