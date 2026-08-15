@@ -287,7 +287,10 @@ export function apply(ctx, entry) {
             state = 'done';
           }
           emitVisionProgress(sessionId, { state, text });
-          if (reused === imageCount || session === void 0 || typeof session.append !== 'function') return;
+          // 成功路径（done）不再追加会话通知：每张新图的完整分析文本已作为
+          // 沉淀消息写进会话历史（见 persistAnalysis），避免重复记录；
+          // 失败/取消/部分失败仍需要错误通知。
+          if (state === 'done' || reused === imageCount || session === void 0 || typeof session.append !== 'function') return;
           session.append('user/message', visionStatusMessage(text, summary), { surfaceOp: 'append' });
         } catch {
           // 状态展示失败不影响主流程
@@ -555,23 +558,133 @@ export function apply(ctx, entry) {
     };
   }
 
+  /** 沉淀消息的标记前缀：文本首行带 attachmentId，供后续请求识别"已分析过"。 */
+  const PERSISTED_PREFIX = '[vision-opencode 图片分析 · ';
+  const persistedMarker = (attachmentId) => `${PERSISTED_PREFIX}${attachmentId}]`;
+  /** 已沉淀图片的占位符：模型对应历史里的分析文本，不再重复注入。 */
+  const persistedPlaceholder = (attachmentId) => `[图片：内容分析见历史消息（图 ${attachmentId.slice(0, 8)}）]`;
+  /** 历史图片的占位文本：模型侧不再重复注入旧图分析，上下文由其自身回答承载。 */
+  const HISTORICAL_IMAGE_PLACEHOLDER = '[图片：历史消息中的图片，本回合不再重复分析]';
+
+  /** 构造沉淀消息：完整分析文本 + attachmentId 标记，UI 上渲染为插件通知。 */
+  function persistedAnalysisMessage(attachmentId, analysis) {
+    return createUserMessage({
+      content: [{ type: 'text', text: `${persistedMarker(attachmentId)}\n${analysis}` }],
+      source: {
+        kind: 'plugin',
+        plugin: 'vision-opencode',
+        form: 'notice',
+        summary: '图片内容分析',
+      },
+    });
+  }
+
+  /**
+   * 扫描会话历史，收集已沉淀过分析的 attachmentId 集合。
+   * 历史即缓存：重启后仍能识别，不会重复分析。
+   */
+  function collectPersistedIds(session) {
+    const ids = new Set();
+    if (session === void 0 || typeof session.deriveMessages !== 'function') return ids;
+    for (const message of session.deriveMessages()) {
+      if (message?.source?.kind !== 'plugin' || message.source.plugin !== 'vision-opencode') continue;
+      if (!Array.isArray(message?.content)) continue;
+      for (const block of message.content) {
+        if (block?.type !== 'text' || typeof block.text !== 'string') continue;
+        const match = new RegExp(`${PERSISTED_PREFIX.replace('[', '\\[')}([^\\]]+)\\]`).exec(block.text);
+        if (match !== null) ids.add(match[1]);
+      }
+    }
+    return ids;
+  }
+
+  /** 尽力把分析文本沉淀进会话历史（失败不影响主流程）；返回是否已沉淀。 */
+  function persistAnalysis(session, attachmentId, analysis) {
+    if (session === void 0 || typeof session.append !== 'function') return false;
+    try {
+      session.append('user/message', persistedAnalysisMessage(attachmentId, analysis), { surfaceOp: 'append' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 替换历史消息里的图片 block（含 tool-result 嵌套）：已沉淀的分析文本
+   * 已在会话历史里，图片只替换为极简占位符，绝不重复注入；未沉淀的历史
+   * 图片（升级前的旧会话）尽力补一次沉淀——缓存命中直接用，否则静默分析，
+   * 本轮仍只放占位符（沉淀文本下一轮起对模型可见）。
+   * 无图或全部命中原数组时返回原数组（不产生新对象）。
+   */
+  async function replaceHistoricalImages(blocks, route, session, persistedIds, signal) {
+    const out = [];
+    let changed = false;
+    for (const block of blocks) {
+      if (block.type === 'image') {
+        const key = visionCacheKey(route, block.attachment);
+        const attachmentId = typeof block.attachment?.attachmentId === 'string' ? block.attachment.attachmentId : '';
+        if (attachmentId.length > 0 && persistedIds.has(attachmentId)) {
+          out.push({ type: 'text', text: persistedPlaceholder(attachmentId) });
+          changed = true;
+          continue;
+        }
+        // 未沉淀：缓存命中直接用，否则静默分析一次（升级前旧会话的补沉淀）
+        let analysis = key === void 0 ? void 0 : analysisCache.get(key);
+        if (analysis === void 0 && key !== void 0) {
+          try {
+            analysis = await analyzeImage(block.attachment, signal);
+            if (analysisCache.size >= 128) {
+              const oldest = analysisCache.keys().next().value;
+              analysisCache.delete(oldest);
+            }
+            analysisCache.set(key, analysis);
+          } catch (error) {
+            // 历史图片的静默分析失败不影响本轮：占位即可，不沉淀、不弹错误
+            analysis = void 0;
+          }
+        }
+        if (analysis !== void 0 && attachmentId.length > 0 && !persistedIds.has(attachmentId)) {
+          if (persistAnalysis(session, attachmentId, analysis)) persistedIds.add(attachmentId);
+        }
+        out.push({ type: 'text', text: analysis !== void 0
+          ? persistedPlaceholder(attachmentId)
+          : HISTORICAL_IMAGE_PLACEHOLDER });
+        changed = true;
+      } else if (block.type === 'tool-result' && Array.isArray(block.content)) {
+        const nested = await replaceHistoricalImages(block.content, route, session, persistedIds, signal);
+        if (nested === block.content) {
+          out.push(block);
+        } else {
+          out.push({ ...block, content: nested });
+          changed = true;
+        }
+      } else {
+        out.push(block);
+      }
+    }
+    return changed ? out : blocks;
+  }
+
   /**
    * 递归地把 content 里的 image block 替换为识图模型的分析文本：
    * - 顶层（user 消息）里的图片：分析文本由调用方追加到消息内容末尾
    * - tool-result 里嵌套的图片（内置 read_image 产生的）：分析文本追加进该 tool-result 的 content
+   * - 首次分析成功的图片会把完整分析文本沉淀进会话历史（带 attachmentId 标记），
+   *   后续请求直接复用历史，不再重复分析、不再重复注入
    * `sink` 收集本次去掉的每张图的分析文本；无图时返回原数组元素（不产生新对象）。
    */
-  async function convertContent(blocks, signal, sink, route, stats) {
+  async function convertContent(blocks, signal, sink, route, stats, session, persistedIds) {
     const out = [];
     for (const block of blocks) {
       if (block.type === 'image') {
         const ref = block.attachment;
         const key = visionCacheKey(route, ref);
+        const attachmentId = typeof ref?.attachmentId === 'string' ? ref.attachmentId : '';
         const requestResult = key === void 0 ? void 0 : stats.requestResults.get(key);
+        let ok = false;
         let analysis = requestResult?.analysis
           ?? (key === void 0 ? void 0 : analysisCache.get(key));
         if (analysis === void 0) {
-          let ok = false;
           try {
             analysis = await analyzeImage(ref, signal);
             ok = true;
@@ -584,7 +697,10 @@ export function apply(ctx, entry) {
           }
           if (ok && key !== void 0) {
             // 只缓存成功结果：失败占位不落缓存，避免进程内持续"中毒"
-            if (analysisCache.size >= 128) analysisCache.clear();
+            if (analysisCache.size >= 128) {
+              const oldest = analysisCache.keys().next().value;
+              analysisCache.delete(oldest);
+            }
             analysisCache.set(key, analysis);
           }
           if (key !== void 0) stats.requestResults.set(key, { analysis });
@@ -597,12 +713,21 @@ export function apply(ctx, entry) {
             stats.requestResults.set(key, { analysis: analysisCache.get(key) });
           }
         }
+        // 首次分析成功（或缓存复用）且尚未沉淀：把干净的分析文本写进会话历史。
+        // 失败占位不沉淀——后续请求仍可重新尝试分析。
+        const cacheHit = requestResult !== void 0 || (key !== void 0 && analysisCache.has(key));
+        if (key !== void 0 && attachmentId.length > 0 && !persistedIds.has(attachmentId) && (ok || cacheHit)) {
+          const clean = analysisCache.get(key);
+          if (persistAnalysis(session, attachmentId, clean ?? analysis)) {
+            persistedIds.add(attachmentId);
+          }
+        }
         sink.push(analysis);
         continue;
       }
       if (block.type === 'tool-result' && Array.isArray(block.content)) {
         const nested = [];
-        const content = await convertContent(block.content, signal, nested, route, stats);
+        const content = await convertContent(block.content, signal, nested, route, stats, session, persistedIds);
         out.push(nested.length > 0
           ? { ...block, content: [...content, formatAnalyses(nested, route)] }
           : block);
@@ -626,15 +751,6 @@ export function apply(ctx, entry) {
         ? countUniqueImages(message.content, seenAttachmentIds)
         : 0), 0);
     if (imageCount === 0) return next();
-    let currentImageCount = 0;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message?.source?.kind !== 'user') continue;
-      currentImageCount = Array.isArray(message.content)
-        ? countUniqueImages(message.content)
-        : 0;
-      break;
-    }
     if (!hasVisionModel(route)) {
       // 未配置识图模型：不能替用户假定任何模型。图片降级为指引文本，
       // 主模型照常完成回合并提示用户先去选择器里选一个识图模型。
@@ -652,8 +768,44 @@ export function apply(ctx, entry) {
         yield* ctx.llm.stream({ ...llmOptions, messages: converted, [BYPASS]: true });
       })();
     }
+    // 只处理「当前回合」的图片——最新一条 user 消息（用户刚发的输入）和
+    // 最新一条 tool-result（工具刚返回的截图等）：只有这两处的未沉淀图片会
+    // 调用识图模型分析并展示进度。其余历史图片的分析文本已沉淀在会话历史里
+    //（或由本请求静默补沉淀），一律只替换为占位符，绝不重复分析、绝不弹提示。
+    const session = typeof llmOptions.sessionId === 'string'
+      ? ctx.get('sessions')?.get(llmOptions.sessionId)
+      : void 0;
+    const persistedIds = collectPersistedIds(session);
+    const lastUserIndex = (() => {
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if (messages[index]?.source?.kind === 'user') return index;
+      }
+      return -1;
+    })();
+    const lastToolIndex = messages.at(-1)?.source?.kind === 'tool' ? messages.length - 1 : -1;
+    const currentIndexes = new Set([lastUserIndex, lastToolIndex].filter((index) => index >= 0));
+    let newImageCount = 0;
+    const countNewImages = (blocks) => {
+      for (const block of blocks) {
+        if (block?.type === 'image') {
+          const key = visionCacheKey(route, block.attachment);
+          if (key === void 0 || !analysisCache.has(key)) {
+            const attachmentId = typeof block.attachment?.attachmentId === 'string' ? block.attachment.attachmentId : '';
+            if (attachmentId.length === 0 || !persistedIds.has(attachmentId)) newImageCount += 1;
+          }
+        } else if (block?.type === 'tool-result' && Array.isArray(block.content)) {
+          countNewImages(block.content);
+        }
+      }
+    };
+    for (const index of currentIndexes) {
+      const message = messages[index];
+      if (Array.isArray(message?.content)) countNewImages(message.content);
+    }
     // 诊断日志：记录每次实际触发转换的请求（帮助定位"图片漏网"类问题）
-    ctx.logger.info(`vision-opencode: 请求含图片，开始自动转换（目标 ${llmOptions.provider}/${llmOptions.model}，${messages.length} 条消息）`);
+    if (newImageCount > 0) {
+      ctx.logger.info(`vision-opencode: 请求含图片，开始自动转换（目标 ${llmOptions.provider}/${llmOptions.model}，${messages.length} 条消息）`);
+    }
     // 不能就地改 llmOptions.messages：agent-loop 拼出的请求是 deep-frozen 的
     // （冻结正是为了强制"监听器只读不写"，直接赋值会抛
     //  "Cannot assign to read only property 'messages'"）。
@@ -664,16 +816,30 @@ export function apply(ctx, entry) {
     return (async function* visionTextStream() {
       let converted;
       const stats = { failures: 0, reused: 0, requestResults: new Map() };
-      const finishStatus = appendVisionStatus(llmOptions, route, imageCount, currentImageCount);
+      const finishStatus = newImageCount > 0
+        ? appendVisionStatus(llmOptions, route, imageCount, newImageCount)
+        : void 0;
       try {
         converted = [];
-        for (const message of messages) {
+        for (let index = 0; index < messages.length; index += 1) {
+          const message = messages[index];
           if (!Array.isArray(message?.content)) {
             converted.push(message);
             continue;
           }
+          if (!currentIndexes.has(index)) {
+            // 历史消息：已沉淀的分析文本在会话历史里，图片只替换为占位符；
+            // 未沉淀的旧图尽力静默补沉淀（缓存命中直接用，否则静默分析一次）
+            const replaced = await replaceHistoricalImages(message.content, route, session, persistedIds, llmOptions.signal);
+            if (replaced === message.content) {
+              converted.push(message);
+              continue;
+            }
+            converted.push(freezeMessage({ ...message, content: replaced }));
+            continue;
+          }
           const sink = [];
-          const content = await convertContent(message.content, llmOptions.signal, sink, route, stats);
+          const content = await convertContent(message.content, llmOptions.signal, sink, route, stats, session, persistedIds);
           if (sink.length === 0) {
             converted.push(message);
             continue;
