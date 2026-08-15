@@ -21,6 +21,7 @@ window.__ModuleLoader__.load({
 			var sessionId = props.sessionId;
 			var useState = react.useState;
 			var useEffect = react.useEffect;
+			var useRef = react.useRef;
 			var createElement = react.createElement;
 			var groupsState = useState([]);
 			var groups = groupsState[0];
@@ -34,6 +35,10 @@ window.__ModuleLoader__.load({
 				var progressState = useState(null);
 				var progress = progressState[0];
 				var setProgress = progressState[1];
+				var openState = useState(false);
+				var open = openState[0];
+				var setOpen = openState[1];
+				var containerRef = useRef(null);
 
 				useEffect(function() {
 					var cancelled = false;
@@ -101,11 +106,28 @@ window.__ModuleLoader__.load({
 					};
 				}, [sessionId]);
 
+				// 自定义下拉：点击外部或按 Escape 关闭
+				useEffect(function() {
+					if (!open) return;
+					var onPointerDown = function(event) {
+						var node = containerRef.current;
+						if (node !== null && !node.contains(event.target)) setOpen(false);
+					};
+					var onKeyDown = function(event) {
+						if (event.key === "Escape") setOpen(false);
+					};
+					document.addEventListener("mousedown", onPointerDown);
+					document.addEventListener("keydown", onKeyDown);
+					return function() {
+						document.removeEventListener("mousedown", onPointerDown);
+						document.removeEventListener("keydown", onKeyDown);
+					};
+				}, [open]);
+
 			var currentValue = current !== null && typeof current.provider === "string" && current.provider.length > 0 ? current.provider + "/" + current.model : "";
 
-			var onChange = function(event) {
-				var value = event.target.value;
-				if (!value) return;
+			var pickModel = function(value) {
+				setOpen(false);
 				var slash = value.indexOf("/");
 				if (slash <= 0) return;
 				var provider = value.slice(0, slash);
@@ -144,65 +166,139 @@ window.__ModuleLoader__.load({
 			if (currentValue && !hasCurrent) options.unshift({ value: currentValue, label: currentValue });
 
 			var placeholder = status === "loading" ? "识图模型…" : (options.length === 0 ? "无识图模型" : "识图模型");
-				var selectStyle = {
-					width: "clamp(92px, 24vw, 170px)",
-					maxWidth: "170px",
+			var disabled = status === "loading" || options.length === 0;
+			var label = currentValue.length > 0 ? currentValue : placeholder;
+
+			// 触发器：视觉上与原生 select 一致（透明背景 + 继承前景色），
+			// 但下拉列表是自定义面板，跟随 dsh 主题令牌（深色/浅色自动切换）。
+			var triggerStyle = {
+				width: "clamp(92px, 24vw, 170px)",
+				maxWidth: "170px",
 				fontSize: "12px",
 				padding: "2px 6px",
 				borderRadius: "6px",
 				border: "1px solid rgba(128,128,128,.35)",
 				background: "transparent",
 				color: "inherit",
-				cursor: "pointer"
+				cursor: disabled ? "default" : "pointer",
+				display: "inline-flex",
+				alignItems: "center",
+				gap: "4px",
+				fontFamily: "inherit",
+				lineHeight: "1.4",
+				opacity: disabled ? 0.7 : 1
 			};
-			var children = [];
-			children.push(createElement("option", { key: "__placeholder__", value: "" }, placeholder));
-				for (var i = 0; i < options.length; i++) {
-					children.push(createElement("option", { key: options[i].value, value: options[i].value }, options[i].label));
-				}
-				var progressLabel = "";
-				var progressColor = "inherit";
-				if (progress !== null) {
-					if (progress.state === "running") progressLabel = "识图中...";
-					else if (progress.state === "done") { progressLabel = "识图完成"; progressColor = "#16803a"; }
-					else if (progress.state === "cancelled") progressLabel = "已取消";
-					else { progressLabel = "识图失败"; progressColor = "#c43d3d"; }
-				}
-				return createElement(
+			var triggerLabelStyle = {
+				flex: "1 1 auto",
+				minWidth: "0",
+				overflow: "hidden",
+				textOverflow: "ellipsis",
+				whiteSpace: "nowrap",
+				textAlign: "left"
+			};
+			var popupStyle = {
+				position: "absolute",
+				right: "0",
+				bottom: "calc(100% + 6px)",
+				zIndex: 1000,
+				minWidth: "220px",
+				maxWidth: "min(320px, 90vw)",
+				maxHeight: "min(300px, 45vh)",
+				overflowY: "auto",
+				padding: "4px",
+				borderRadius: "10px",
+				border: "1px solid var(--dsw-alias-border-inverted)",
+				background: "var(--dsw-specific-menu)",
+				boxShadow: "var(--dsw-shadow-lv3, 0 8px 24px rgba(0,0,0,.3))",
+				color: "var(--dsw-alias-label-primary)",
+				fontSize: "12px"
+			};
+			var rowBaseStyle = {
+				display: "flex",
+				alignItems: "center",
+				gap: "6px",
+				padding: "5px 8px",
+				borderRadius: "6px",
+				cursor: "pointer",
+				whiteSpace: "nowrap"
+			};
+			var rowLabelStyle = {
+				flex: "1 1 auto",
+				minWidth: "0",
+				overflow: "hidden",
+				textOverflow: "ellipsis"
+			};
+
+			var optionNodes = [];
+			for (var i = 0; i < options.length; i++) {
+				var option = options[i];
+				if (option === null || typeof option !== "object" || typeof option.value !== "string") continue;
+				var selected = option.value === currentValue;
+				optionNodes.push(createElement("div", {
+					key: option.value,
+					role: "option",
+					"aria-selected": selected,
+					title: option.label,
+					onClick: (function(value) {
+						return function() { pickModel(value); };
+					})(option.value),
+					style: Object.assign({}, rowBaseStyle, selected ? { background: "var(--dsw-alias-interactive-bg-hover)" } : {})
+				},
+					createElement("span", { style: { flex: "none", width: "14px", color: "var(--dsw-alias-label-primary)" } }, selected ? "✓" : ""),
+					createElement("span", { style: rowLabelStyle }, option.label)));
+			}
+
+			var progressLabel = "";
+			var progressColor = "inherit";
+			if (progress !== null) {
+				if (progress.state === "running") progressLabel = "识图中...";
+				else if (progress.state === "done") { progressLabel = "识图完成"; progressColor = "var(--dsw-static-green-500)"; }
+				else if (progress.state === "cancelled") progressLabel = "已取消";
+				else { progressLabel = "识图失败"; progressColor = "var(--dsw-static-red-500)"; }
+			}
+
+			return createElement(
 				"span",
 				{
 					className: "vision-opencode-select",
 					title: "识图模型：vision_read_image 看图时使用的模型",
-						style: { position: "relative", display: "inline-flex", alignItems: "center", marginRight: "6px", fontSize: "12px", color: "inherit", opacity: "0.9" }
+					ref: containerRef,
+					style: { position: "relative", display: "inline-flex", alignItems: "center", marginRight: "6px", fontSize: "12px", color: "inherit", opacity: "0.9" }
 				},
-					createElement("select", {
-					id: "vision-opencode-model",
-					value: currentValue,
-					onChange: onChange,
-					disabled: status === "loading" || options.length === 0,
-					style: selectStyle,
-					"aria-label": "识图模型"
-					}, children),
-					createElement("span", {
-						"aria-live": "polite",
-						title: progress !== null ? progress.text : "",
-						style: {
-							display: "inline-block",
-							position: "absolute",
-							right: "0",
-							bottom: "calc(100% + 6px)",
-							width: "clamp(92px, 24vw, 170px)",
-							overflow: "hidden",
-							textOverflow: "ellipsis",
-							whiteSpace: "nowrap",
-							textAlign: "right",
-							pointerEvents: "none",
-							color: progressColor,
-							opacity: progress === null ? "0" : "0.9"
-						}
-					}, progressLabel)
-				);
-		};
+				createElement("style", null, ".vision-opencode-select [role=\"option\"]:hover { background: var(--dsw-alias-interactive-bg-hover); }"),
+				createElement("button", {
+					type: "button",
+					"aria-label": "识图模型",
+					"aria-haspopup": "listbox",
+					"aria-expanded": open,
+					title: label,
+					disabled: disabled,
+					onClick: function() { setOpen(!open); },
+					style: triggerStyle
+				},
+					createElement("span", { style: triggerLabelStyle }, label),
+					createElement("span", { style: { flex: "none", fontSize: "9px", opacity: "0.6" } }, "▾")),
+				open && !disabled ? createElement("div", { role: "listbox", "aria-label": "识图模型", style: popupStyle }, optionNodes) : null,
+				progress !== null && !open ? createElement("span", {
+					"aria-live": "polite",
+					title: progress.text,
+					style: {
+						display: "inline-block",
+						position: "absolute",
+						right: "0",
+						bottom: "calc(100% + 6px)",
+						width: "clamp(92px, 24vw, 170px)",
+						overflow: "hidden",
+						textOverflow: "ellipsis",
+						whiteSpace: "nowrap",
+						textAlign: "right",
+						pointerEvents: "none",
+						color: progressColor,
+						opacity: "0.9"
+					}
+				}, progressLabel) : null
+			);
+	};
 
 		exports.inject = ["slots"];
 		exports.apply = function(ctx) {
