@@ -16,9 +16,9 @@
 
 A plugin for DeepSeek Harness (DSH) that adds a **configurable vision model** alongside your text-only main model. Your main model (e.g. DeepSeek) can't read images? No problem — images are first understood by a vision model (e.g. MiMo-V2.5) and turned into text, which is then handed to your main model. You never have to swap out your primary model.
 
-- A "vision model" dropdown next to the input box (auto-lists every image-capable model across providers)
+- A "vision model" dropdown next to the input box (auto-lists every image-capable model across providers), styled after the official DSH model selector (group headings, trailing check mark, arrow-key navigation, retry-on-failure, toast), with a "Vision" prefix on the trigger
 - A runtime `vision-image-analysis` skill that guides the main model to call `vision_read_image` for OCR, charts, screenshots, and scenes; it gracefully falls back to tool and prompt guidance when DSH's skill service is absent
-- **Auto-conversion** for chat attachments, with ephemeral progress beside the composer and one native DSH `notice` retained only when analysis completes or fails
+- **Auto-conversion** for chat attachments, with ephemeral progress shown in the selector trigger's "Vision" slot (official-style shimmer while running) and one native DSH `notice` retained only when analysis completes or fails
 - Automatically detects text-only routes from each adapter's catalog; native multimodal main models retain DSH's native image handling, with no second route list to keep in sync
 - Fault tolerance: 60s per-call timeout, one automatic retry for retriable failures, and a graceful placeholder-text fallback when retries are exhausted (the main model still answers and tells the user)
 - Admits image submission through an in-process capability layer across pi-ai, `deepseek-official`, and other adapters without modifying the user's model catalog
@@ -118,7 +118,7 @@ vision-opencode:
 
 Restart `dsh`. A "vision model" dropdown appears next to the input box — it auto-lists every image-capable model across your providers; it shows a 「识图模型」 placeholder until you pick one, and your pick is written back into settings.
 
-Chat attachments and workspace images use complementary paths. Attachments must be converted before a text-only main request is sent, so progress appears temporarily beside the composer and only one final `vision-opencode` context record remains. For a later workspace path, screenshot, chart, or OCR task, the model can load the `vision-image-analysis` skill, call `vision_read_image`, and show its native tool card. Both paths use any multimodal provider/model selected in the dropdown; OpenCode Go is not required.
+Chat attachments and workspace images use complementary paths. Attachments must be converted before a text-only main request is sent, so progress appears temporarily in the vision-model trigger (replacing the "Vision" prefix) and only one final `vision-opencode` context record remains. For a later workspace path, screenshot, chart, or OCR task, the model can load the `vision-image-analysis` skill, call `vision_read_image`, and show its native tool card. Both paths use any multimodal provider/model selected in the dropdown; OpenCode Go is not required.
 
 `autoConvert` applies to every route that DSH declares as text-only. The plugin re-reads capabilities after a provider/model switch; native multimodal routes retain their original image path.
 
