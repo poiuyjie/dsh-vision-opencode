@@ -32,6 +32,7 @@
     "index.js",
     "core.js",
     "client.js",
+    "cordis.patch.yml",
     "README.md",
     "README.en.md",
     "scripts/install.sh",
@@ -41,6 +42,9 @@
     "scripts/selftest.ps1"
   ],
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web"
     }
