@@ -58,6 +58,8 @@ const VisionModelEntry = z.object({
   model: z.string(),
   name: z.string().default(''),
   description: z.string().default(''),
+  baseUrl: z.string().default('').optional(),
+  requestFormat: z.enum(['openai', 'anthropic']).default('openai').optional(),
 });
 
 /** 识图模型配置 schema（settings 面板自动生成表单）。 */
@@ -133,6 +135,8 @@ export function apply(ctx, entry) {
             model: String(e.model).trim(),
             name: typeof e.name === 'string' ? e.name.trim() : '',
             description: typeof e.description === 'string' ? e.description.trim() : '',
+            baseUrl: typeof e.baseUrl === 'string' ? e.baseUrl.trim() : '',
+            requestFormat: e.requestFormat === 'anthropic' ? 'anthropic' : 'openai',
           }))
         : [],
       autoConvert: raw?.autoConvert !== false,
@@ -1062,6 +1066,8 @@ export function apply(ctx, entry) {
             const model = typeof body?.model === 'string' ? body.model.trim() : '';
             const name = typeof body?.name === 'string' ? body.name.trim() : '';
             const description = typeof body?.description === 'string' ? body.description.trim() : '';
+            const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
+            const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : 'openai';
             let id = typeof body?.id === 'string' ? body.id.trim() : '';
             if (provider.length === 0 || model.length === 0) {
               json(res, 400, { error: 'provider and model are required' });
@@ -1077,7 +1083,7 @@ export function apply(ctx, entry) {
               json(res, 409, { error: `vision model "${provider}/${model}" already exists` });
               return;
             }
-            const entry = { id, provider, model, name, description };
+            const entry = { id, provider, model, name, description, baseUrl, requestFormat };
             models.push(entry);
             if (settingsScope !== void 0) {
               await settingsScope.replace({ ...options(), visionModels: models });
@@ -1095,6 +1101,8 @@ export function apply(ctx, entry) {
             const model = typeof body?.model === 'string' ? body.model.trim() : '';
             const name = typeof body?.name === 'string' ? body.name.trim() : '';
             const description = typeof body?.description === 'string' ? body.description.trim() : '';
+            const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
+            const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : 'openai';
             if (id.length === 0 || provider.length === 0 || model.length === 0) {
               json(res, 400, { error: 'id, provider and model are required' });
               return;
@@ -1109,7 +1117,7 @@ export function apply(ctx, entry) {
               json(res, 409, { error: `vision model "${provider}/${model}" already exists` });
               return;
             }
-            models[idx] = { id, provider, model, name, description };
+            models[idx] = { id, provider, model, name, description, baseUrl, requestFormat };
             if (settingsScope !== void 0) {
               await settingsScope.replace({ ...options(), visionModels: models });
             } else {

@@ -112,8 +112,8 @@ window.__ModuleLoader__.load({
 				".vmo-settings-groupTitle{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:500;line-height:18px;padding:4px 2px 0;margin:0}",
 				".vmo-settings-groupHeader{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-primary,transparent);color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px;cursor:pointer;text-align:left}",
 				".vmo-settings-groupHeader:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}",
-				".vmo-settings-groupChevron{flex:none;font-size:14px;color:var(--dsw-alias-label-tertiary);transition:transform 120ms ease;transform:rotate(-90deg)}",
-				".vmo-settings-groupOpen .vmo-settings-groupChevron{transform:rotate(0deg)}",
+				".vmo-settings-groupChevron{flex:none;font-size:14px;color:var(--dsw-alias-label-tertiary);transition:transform 120ms ease;transform:rotate(0deg)}",
+				".vmo-settings-groupOpen .vmo-settings-groupChevron{transform:rotate(90deg)}",
 				".vmo-settings-groupCount{margin-left:auto;font-size:12px;font-weight:400;color:var(--dsw-alias-label-tertiary)}",
 				".vmo-settings-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:var(--dsw-alias-bg-primary,transparent)}",
 				".vmo-settings-head{display:flex;align-items:center;gap:10px}",
@@ -665,16 +665,25 @@ window.__ModuleLoader__.load({
 
 			var submitAddOrEdit = function(){
 				if(!modal) return;
-				var p = (modal.data.provider||"").trim();
+				var isCustom = modal.data.provider==="custom" || modal.data.providerType==="custom";
+				var p = isCustom ? (modal.data.customProvider||"").trim() : (modal.data.provider||"").trim();
+				if(isCustom && p.length===0){ showToast("请填写自定义提供方名称"); return; }
 				var m = (modal.data.model||"").trim();
 				var n = (modal.data.name||"").trim();
+				if(n.length===0) n = m;
 				var d = (modal.data.description||"").trim();
 				if(p.length===0 || m.length===0){ showToast("提供方和模型ID为必填"); return; }
+				if(isCustom){
+					var bu = (modal.data.baseUrl||"").trim();
+					if(bu.length===0){ showToast("请填写 Base URL"); return; }
+				}
 				setBusy(true);
 				var isEdit = modal.mode==="edit";
 				var url="/vision-opencode/vision-models";
 				var method=isEdit?"PUT":"POST";
-				fetch(url,{method:method, headers:{"content-type":"application/json"}, body: JSON.stringify({id: modal.data.id, provider:p, model:m, name:n, description:d})})
+				var extra = {};
+				if(isCustom){ extra.baseUrl = (modal.data.baseUrl||"").trim(); extra.requestFormat = modal.data.requestFormat||"openai"; }
+				fetch(url,{method:method, headers:{"content-type":"application/json"}, body: JSON.stringify(Object.assign({id: modal.data.id, provider:p, model:m, name:n, description:d}, extra))})
 				.then(function(r){ return r.json().then(function(j){ return {ok:r.ok,status:r.status,body:j}; }); })
 				.then(function(res){
 					setBusy(false);
@@ -808,7 +817,7 @@ window.__ModuleLoader__.load({
 								isSelected(vm)
 									? createElement("button",{type:"button", className:"vmo-settings-btn", disabled:true, style:{opacity:0.6,cursor:"default"}}, IconCheckOutline16 ? createElement(IconCheckOutline16,{size:12}) : null, "当前")
 									: createElement("button",{type:"button", className:"vmo-settings-btn", disabled:busy, style:{borderColor:"var(--dsw-alias-state-success-primary)",color:"var(--dsw-alias-state-success-primary)"}, onClick:(function(v){return function(){ selectAsCurrent(v); };})(vm)}, "设为当前"),
-								createElement("button",{type:"button", className:"vmo-settings-btn", disabled:busy, onClick:(function(v){return function(){ setModal({mode:"edit", data:{id:v.id,provider:v.provider,model:v.model,name:v.name||"",description:v.description||""}}); };})(vm)}, IconEditOutline16 ? createElement(IconEditOutline16,{size:12}) : null, "编辑"),
+								createElement("button",{type:"button", className:"vmo-settings-btn", disabled:busy, onClick:(function(v){return function(){ var isCustomEdit = v.provider!=="opencode-go"; setModal({mode:"edit", data:{id:v.id,provider:isCustomEdit?"custom":v.provider,customProvider:isCustomEdit?v.provider:"",model:v.model,name:v.name||"",description:v.description||"",baseUrl:v.baseUrl||"",requestFormat:v.requestFormat||"openai",providerType:isCustomEdit?"custom":"opencode-go"}}); };})(vm)}, IconEditOutline16 ? createElement(IconEditOutline16,{size:12}) : null, "编辑"),
 								createElement("button",{type:"button", className:"vmo-settings-btn vmo-settings-btn-danger", disabled:busy, onClick:(function(v){return function(){ setDelTarget(v); };})(vm)}, IconTrashOutline16 ? createElement(IconTrashOutline16,{size:12}) : null, "删除")
 							)
 						),
@@ -850,7 +859,7 @@ window.__ModuleLoader__.load({
 				);
 			}
 			var addBlock = createElement("div",{className:"vmo-settings-addBlock"},
-				createElement("button",{type:"button", className:"vmo-settings-addBtn", disabled:busy, onClick:function(){ setModal({mode:"add", data:{id:"",provider:"",model:"",name:"",description:""}}); }}, IconPlusOutline16 ? createElement(IconPlusOutline16,{size:14}) : null, " 添加 Vision 模型")
+				createElement("button",{type:"button", className:"vmo-settings-addBtn", disabled:busy, onClick:function(){ setModal({mode:"add", data:{id:"",provider:"opencode-go",providerType:"opencode-go",customProvider:"",model:"",name:"",description:"",baseUrl:"",requestFormat:"openai"}}); }}, IconPlusOutline16 ? createElement(IconPlusOutline16,{size:14}) : null, " 添加 Vision 模型")
 			);
 
 			var modalEl = null;
@@ -864,16 +873,40 @@ window.__ModuleLoader__.load({
 				};
 				var content = createElement("div",{style:{display:"flex",flexDirection:"column",gap:"12px"}},
 					createElement("div",{className:"vmo-field"},
-						createElement("label",{className:"vmo-field-label"},"提供方 * (如 opencode-go)"),
-						createElement("input",{className:"vmo-input", value:modal.data.provider, placeholder:"openai / opencode-go / custom", onChange:function(e){ updateField("provider", e.target.value); }})
+						createElement("label",{className:"vmo-field-label"},"提供方 *"),
+						createElement("select",{className:"vmo-input", value: modal.data.providerType || (modal.data.provider==="opencode-go" ? "opencode-go" : (modal.data.provider ? "custom" : "opencode-go")), onChange:function(e){
+							var v=e.target.value;
+							if(v==="opencode-go") updateField("provider","opencode-go");
+							else if(v==="custom") updateField("provider","custom");
+						}},
+							createElement("option",{value:"opencode-go"},"opencode-go（官方地址）"),
+							createElement("option",{value:"custom"},"自定义提供方")
+						)
 					),
+					(modal.data.provider==="custom" || modal.data.providerType==="custom" ? createElement("div",{style:{display:"flex",flexDirection:"column",gap:"12px",marginTop:"4px",padding:"10px",border:"1px solid var(--dsw-alias-border-l2)",borderRadius:"8px"}},
+						createElement("div",{className:"vmo-field"},
+							createElement("label",{className:"vmo-field-label"},"自定义提供方名称 *"),
+							createElement("input",{className:"vmo-input", value:modal.data.customProvider||"", placeholder:"如 my-provider", onChange:function(e){ updateField("customProvider", e.target.value); }})
+						),
+						createElement("div",{className:"vmo-field"},
+							createElement("label",{className:"vmo-field-label"},"Base URL *"),
+							createElement("input",{className:"vmo-input", value:modal.data.baseUrl||"", placeholder:"https://api.example.com/v1", onChange:function(e){ updateField("baseUrl", e.target.value); }})
+						),
+						createElement("div",{className:"vmo-field"},
+							createElement("label",{className:"vmo-field-label"},"请求格式"),
+							createElement("select",{className:"vmo-input", value:modal.data.requestFormat||"openai", onChange:function(e){ updateField("requestFormat", e.target.value); }},
+								createElement("option",{value:"openai"},"OpenAI 兼容"),
+								createElement("option",{value:"anthropic"},"Anthropic")
+							)
+						)
+					) : null),
 					createElement("div",{className:"vmo-field"},
 						createElement("label",{className:"vmo-field-label"},"模型ID *"),
 						createElement("input",{className:"vmo-input", value:modal.data.model, placeholder:"mimo-v2.5 / gpt-4o", onChange:function(e){ updateField("model", e.target.value); }})
 					),
 					createElement("div",{className:"vmo-field"},
 						createElement("label",{className:"vmo-field-label"},"显示名"),
-						createElement("input",{className:"vmo-input", value:modal.data.name, placeholder:"可选，未填显示 model", onChange:function(e){ updateField("name", e.target.value); }})
+						createElement("input",{className:"vmo-input", value:modal.data.name, placeholder:"默认与模型ID相同", onChange:function(e){ updateField("name", e.target.value); }})
 					),
 					createElement("div",{className:"vmo-field"},
 						createElement("label",{className:"vmo-field-label"},"备注"),
