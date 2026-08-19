@@ -59,7 +59,7 @@ const VisionModelEntry = z.object({
   name: z.string().default(''),
   description: z.string().default(''),
   baseUrl: z.string().default(''),
-  requestFormat: z.enum(['openai', 'anthropic']).default('openai'),
+  requestFormat: z.union([z.const('openai'), z.const('anthropic')]).default('openai'),
 });
 
 /** 识图模型配置 schema（settings 面板自动生成表单）。 */
