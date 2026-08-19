@@ -108,6 +108,8 @@ window.__ModuleLoader__.load({
 				".vmo-settings-title{color:var(--dsw-alias-label-primary);margin:0;font-size:16px;font-weight:500;line-height:24px}",
 				".vmo-settings-intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:14px;line-height:22px}",
 				".vmo-settings-rows{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}",
+				".vmo-settings-group{display:flex;flex-direction:column;gap:8px}",
+				".vmo-settings-groupTitle{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:500;line-height:18px;padding:4px 2px 0;margin:0}",
 				".vmo-settings-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:var(--dsw-alias-bg-primary,transparent)}",
 				".vmo-settings-head{display:flex;align-items:center;gap:10px}",
 				".vmo-settings-identity{display:inline-flex;align-items:center;gap:6px;min-width:0}",
@@ -763,12 +765,25 @@ window.__ModuleLoader__.load({
 				}
 				rowsEl = createElement.apply(null, ["div", null].concat(emptyChildren));
 			} else {
-				var items = [];
+				// 按 provider 分组渲染，与系统模型列表一致的视觉分组
+				var grouped = {};
 				for(var i=0;i<models.length;i++){
-					var vm = models[i];
-					var dotCls = isSelected(vm) ? "vmo-settings-dot vmo-settings-dot-on" : "vmo-settings-dot vmo-settings-dot-idle";
-					var tag = vm.provider;
-					items.push(createElement("li",{key:vm.id, className:"vmo-settings-card"},
+					var _vm = models[i];
+					var _p = _vm.provider || "unknown";
+					if(!grouped[_p]) grouped[_p] = [];
+					grouped[_p].push(_vm);
+				}
+				var groupKeys = Object.keys(grouped).sort();
+				var groupSections = [];
+				for(var gi=0; gi<groupKeys.length; gi++){
+					var gProvider = groupKeys[gi];
+					var gModels = grouped[gProvider];
+					var gItems = [];
+					for(var mi=0; mi<gModels.length; mi++){
+						var vm = gModels[mi];
+						var dotCls = isSelected(vm) ? "vmo-settings-dot vmo-settings-dot-on" : "vmo-settings-dot vmo-settings-dot-idle";
+						var tag = vm.provider;
+						gItems.push(createElement("li",{key:vm.id, className:"vmo-settings-card"},
 						createElement("div",{className:"vmo-settings-head"},
 							createElement("div",{className:"vmo-settings-identity"},
 								createElement("span",{className:dotCls, title: isSelected(vm) ? "当前选中" : "未选中"}),
@@ -788,9 +803,14 @@ window.__ModuleLoader__.load({
 							vm.description ? createElement("span",null, vm.description) : null,
 							isSelected(vm) ? createElement("span",{style:{marginLeft:"8px",color:"var(--dsw-alias-state-success-primary)"}}, "· 当前选中") : null
 						)
+						));
+					}
+					groupSections.push(createElement("section",{key:gProvider, className:"vmo-settings-group"},
+						createElement("div",{className:"vmo-settings-groupTitle"}, gProvider + " · " + gModels.length + " 个模型"),
+						createElement("ul",{className:"vmo-settings-rows", style:{marginTop:"0"}}, gItems)
 					));
 				}
-				rowsEl = createElement("ul",{className:"vmo-settings-rows"}, items);
+				rowsEl = createElement("div",{style:{display:"flex",flexDirection:"column",gap:"16px"}}, groupSections);
 			}
 
 			var systemHint = null;
