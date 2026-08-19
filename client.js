@@ -597,17 +597,39 @@ window.__ModuleLoader__.load({
 			var toast2 = toast2State[0];
 			var setToast2 = toast2State[1];
 
+			var systemModelsState = useState([]);
+			var systemModels = systemModelsState[0];
+			var setSystemModels = systemModelsState[1];
+			var importingState = useState(null);
+			var importing = importingState[0];
+			var setImporting = importingState[1];
 			var fetchAll = function(){
 				setLoading(true);
 				Promise.all([
 					fetch("/vision-opencode/vision-models",{headers:{accept:"application/json"}}).then(function(r){return r.json();}),
-					fetch("/vision-opencode/config",{headers:{accept:"application/json"}}).then(function(r){return r.json();}).catch(function(){return null;})
+					fetch("/vision-opencode/config",{headers:{accept:"application/json"}}).then(function(r){return r.json();}).catch(function(){return null;}),
+					fetch("/vision-opencode/models",{headers:{accept:"application/json"}}).then(function(r){return r.json();}).catch(function(){return {groups:[]};})
 				]).then(function(res){
 					var vm = res[0];
 					var cfg = res[1];
+					var sys = res[2];
 					if(vm && Array.isArray(vm.models)) setModels(vm.models);
 					else setModels([]);
 					if(cfg) setConfig(cfg);
+					var flat = [];
+					if(sys && Array.isArray(sys.groups)){
+						for(var gi=0; gi<sys.groups.length; gi++){
+							var g=sys.groups[gi];
+							if(!g || typeof g.provider!=="string") continue;
+							var ms=Array.isArray(g.models)?g.models:[];
+							for(var mi=0; mi<ms.length; mi++){
+								var m=ms[mi];
+								if(!m || typeof m.id!=="string") continue;
+								flat.push({provider:g.provider, model:m.id, name: typeof m.name==="string"?m.name:m.id});
+							}
+						}
+					}
+					setSystemModels(flat);
 					setLoading(false);
 					setErr(null);
 				}).catch(function(e){
@@ -683,13 +705,61 @@ window.__ModuleLoader__.load({
 			);
 			var intro = createElement("p",{className:"vmo-settings-intro"}, "管理 Vision 插件的独立模型（增删改查），存储于 setting.yaml: vision-opencode.models。被选中的模型会在输入框右侧 Vision 下拉中高亮，并作为 vision_read_image 的默认目标。");
 
+			var isInPlugin = function(provider, model){
+				for(var _i=0; _i<models.length; _i++) if(models[_i].provider===provider && models[_i].model===model) return true;
+				return false;
+			};
+			var systemOnly = [];
+			for(var _j=0; _j<systemModels.length; _j++){
+				var _sm = systemModels[_j];
+				if(!isInPlugin(_sm.provider, _sm.model)) systemOnly.push(_sm);
+			}
+			var importAll = function(){
+				if(systemOnly.length===0 || busy) return;
+				setBusy(true);
+				var pending = systemOnly.slice();
+				var okCount = 0;
+				var next = function(){
+					if(pending.length===0){
+						setBusy(false);
+						fetchAll();
+						showToast("已导入 "+okCount+" 个模型");
+						return;
+					}
+					var cur = pending.shift();
+					fetch("/vision-opencode/vision-models",{method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({provider: cur.provider, model: cur.model, name: cur.name})})
+					.then(function(r){ return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
+					.then(function(res){
+						if(res.ok) okCount++;
+						next();
+					}).catch(function(){ next(); });
+				};
+				next();
+			};
+			var importOne = function(entry){
+				if(busy || isInPlugin(entry.provider, entry.model)) return;
+				setImporting(entry.provider+"/"+entry.model);
+				setBusy(true);
+				fetch("/vision-opencode/vision-models",{method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({provider: entry.provider, model: entry.model, name: entry.name})})
+				.then(function(r){ return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
+				.then(function(res){
+					setBusy(false); setImporting(null);
+					if(!res.ok){ showToast(res.body.error||"导入失败"); return; }
+					setModels(res.body.models||[]);
+					showToast("已导入 "+entry.provider+"/"+entry.model);
+				}).catch(function(e){ setBusy(false); setImporting(null); showToast(String(e)); });
+			};
 			var rowsEl;
 			if(loading){
 				rowsEl = createElement("div",{className:"vmo-settings-empty"},"加载中…");
 			} else if(err){
 				rowsEl = createElement("div",{className:"vmo-settings-error"}, "加载失败："+err+" ", createElement("button",{className:"vmo-settings-btn", onClick:fetchAll},"重试"));
 			} else if(models.length===0){
-				rowsEl = createElement("div",{className:"vmo-settings-empty"},"暂无 Vision 模型，请添加");
+				var emptyChildren = [createElement("div",{className:"vmo-settings-empty"},"暂无 Vision 模型。已在系统模型中检测到 "+systemOnly.length+" 个可用模型，可一键导入。")];
+				if(systemOnly.length>0){
+					emptyChildren.push(createElement("button",{type:"button", className:"vmo-settings-addBtn", style:{marginTop:"8px"}, disabled:busy, onClick: importAll}, "一键导入全部 ("+systemOnly.length+")"));
+				}
+				rowsEl = createElement("div",null, emptyChildren);
 			} else {
 				var items = [];
 				for(var i=0;i<models.length;i++){
@@ -721,6 +791,20 @@ window.__ModuleLoader__.load({
 				rowsEl = createElement("ul",{className:"vmo-settings-rows"}, items);
 			}
 
+			var systemHint = null;
+			if(!loading && !err && systemOnly.length>0){
+				systemHint = createElement("div",{style:{display:"flex",flexDirection:"column",gap:"8px",marginBottom:"8px",padding:"10px 12px",border:"1px dashed var(--dsw-alias-border-l3)",borderRadius:"12px"}},
+					createElement("div",{style:{fontSize:"13px",color:"var(--dsw-alias-label-secondary)"}}, "检测到 "+systemOnly.length+" 个未导入的系统模型"),
+					createElement("div",{style:{display:"flex",flexWrap:"wrap",gap:"6px"}},
+						systemOnly.map(function(e){
+							var key=e.provider+"/"+e.model;
+							var isImp = importing===key;
+							return createElement("button",{key:key, type:"button", className:"vmo-settings-btn", disabled:busy, onClick:(function(entry){ return function(){ importOne(entry); }; })(e)}, isImp?"导入中…": key);
+						})
+					),
+					createElement("button",{type:"button", className:"vmo-settings-btn", disabled:busy, onClick: importAll}, "一键导入全部 ("+systemOnly.length+")")
+				);
+			}
 			var addBlock = createElement("div",{className:"vmo-settings-addBlock"},
 				createElement("button",{type:"button", className:"vmo-settings-addBtn", disabled:busy, onClick:function(){ setModal({mode:"add", data:{id:"",provider:"",model:"",name:"",description:""}}); }}, IconPlusOutline16 ? createElement(IconPlusOutline16,{size:14}) : null, " 添加 Vision 模型")
 			);
@@ -792,7 +876,7 @@ window.__ModuleLoader__.load({
 			var toastEl = toast2 ? createElement("div",{style:{position:"fixed",left:"50%",top:"16px",transform:"translateX(-50%)",background:"var(--dsw-alias-bg-primary,#333)",color:"var(--dsw-alias-label-primary)",border:"1px solid var(--dsw-alias-border-l2)",padding:"8px 12px",borderRadius:"8px",fontSize:"13px",zIndex:10000,boxShadow:"var(--dsw-shadow-lv3)"}}, toast2) : null;
 
 			return createElement("section",{className:"vmo-settings-section", "aria-label":"Vision 模型"},
-				header, intro, rowsEl, addBlock, modalEl, delEl, toastEl
+				header, intro, systemHint, rowsEl, addBlock, modalEl, delEl, toastEl
 			);
 		};
 
