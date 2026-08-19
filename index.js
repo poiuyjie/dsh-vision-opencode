@@ -51,10 +51,21 @@ const IMAGE_EXTENSIONS = {
 /** 本插件持有的 settings namespace。 */
 const NS = settingsNamespace('vision-opencode');
 
+/** 单条 Vision 模型（插件自管，不依赖宿主 provider 目录）。 */
+const VisionModelEntry = z.object({
+  id: z.string(),
+  provider: z.string(),
+  model: z.string(),
+  name: z.string().default(''),
+  description: z.string().default(''),
+});
+
 /** 识图模型配置 schema（settings 面板自动生成表单）。 */
 const Config = z.object({
   provider: z.string().default(''),
   model: z.string().default(''),
+  /** 插件自管的 Vision 模型列表：与 llm 宿主目录解耦，供设置页增删改查。 */
+  visionModels: z.array(VisionModelEntry).default([]),
   /** llm/stream 瀑布开关：false 时停用「发图自动转换」，只保留工具与选择器（稳定性逃生阀）。 */
   autoConvert: z.boolean().default(true),
   /** 旧版/手动兼容路由；当前版本通常由适配器能力自动识别。 */
@@ -111,6 +122,19 @@ export function apply(ctx, entry) {
     const next = {
       provider: typeof raw?.provider === 'string' ? raw.provider.trim() : '',
       model: typeof raw?.model === 'string' ? raw.model.trim() : '',
+      visionModels: Array.isArray(raw?.visionModels)
+        ? raw.visionModels.filter((e) => e !== null && typeof e === 'object'
+          && typeof e.id === 'string' && e.id.length > 0
+          && typeof e.provider === 'string' && e.provider.length > 0
+          && typeof e.model === 'string' && e.model.length > 0)
+          .map((e) => ({
+            id: e.id,
+            provider: String(e.provider).trim(),
+            model: String(e.model).trim(),
+            name: typeof e.name === 'string' ? e.name.trim() : '',
+            description: typeof e.description === 'string' ? e.description.trim() : '',
+          }))
+        : [],
       autoConvert: raw?.autoConvert !== false,
       mainProvider: typeof raw?.mainProvider === 'string' ? raw.mainProvider.trim() : '',
       mainModels: Array.isArray(raw?.mainModels)
@@ -958,6 +982,7 @@ export function apply(ctx, entry) {
               return;
             }
             // 精确排除本插件管理的文本主路由，并校验候选模型确实声明了 image 输入。
+            // 允许插件自管 visionModels 中的自定义模型（即使宿主 catalog 未标记 image）。
             let declaredVision = false;
             try {
               const info = await ctx.llm.resolveModelInfo(provider, model);
@@ -965,7 +990,8 @@ export function apply(ctx, entry) {
             } catch {
               declaredVision = false;
             }
-            if (managedTextRoute(provider, model) || !declaredVision) {
+            const customAllowed = options().visionModels.some((e) => e.provider === provider && e.model === model);
+            if (managedTextRoute(provider, model) || (!declaredVision && !customAllowed)) {
               json(res, 400, { error: `model "${provider}/${model}" is not a vision-capable model` });
               return;
             }
@@ -1021,6 +1047,118 @@ export function apply(ctx, entry) {
         }
       },
     }), 'vision-opencode: models route');
+    wctx.effect(() => wctx.webServer.register({
+      kind: 'exact',
+      path: '/vision-opencode/vision-models',
+      handler: async (req, res) => {
+        try {
+          if (req.method === 'GET') {
+            json(res, 200, { models: options().visionModels });
+            return;
+          }
+          if (req.method === 'POST') {
+            const body = await readJsonBody(req);
+            const provider = typeof body?.provider === 'string' ? body.provider.trim() : '';
+            const model = typeof body?.model === 'string' ? body.model.trim() : '';
+            const name = typeof body?.name === 'string' ? body.name.trim() : '';
+            const description = typeof body?.description === 'string' ? body.description.trim() : '';
+            let id = typeof body?.id === 'string' ? body.id.trim() : '';
+            if (provider.length === 0 || model.length === 0) {
+              json(res, 400, { error: 'provider and model are required' });
+              return;
+            }
+            if (id.length === 0) id = `${provider}__${model}__${Date.now().toString(36)}`;
+            const models = [...options().visionModels];
+            if (models.some((e) => e.id === id)) {
+              json(res, 409, { error: `vision model id "${id}" already exists` });
+              return;
+            }
+            if (models.some((e) => e.provider === provider && e.model === model)) {
+              json(res, 409, { error: `vision model "${provider}/${model}" already exists` });
+              return;
+            }
+            const entry = { id, provider, model, name, description };
+            models.push(entry);
+            if (settingsScope !== void 0) {
+              await settingsScope.replace({ ...options(), visionModels: models });
+            } else {
+              const next = { ...options(), visionModels: models };
+              current = () => next;
+            }
+            json(res, 201, { models: options().visionModels, created: entry });
+            return;
+          }
+          if (req.method === 'PUT') {
+            const body = await readJsonBody(req);
+            const id = typeof body?.id === 'string' ? body.id.trim() : '';
+            const provider = typeof body?.provider === 'string' ? body.provider.trim() : '';
+            const model = typeof body?.model === 'string' ? body.model.trim() : '';
+            const name = typeof body?.name === 'string' ? body.name.trim() : '';
+            const description = typeof body?.description === 'string' ? body.description.trim() : '';
+            if (id.length === 0 || provider.length === 0 || model.length === 0) {
+              json(res, 400, { error: 'id, provider and model are required' });
+              return;
+            }
+            const models = [...options().visionModels];
+            const idx = models.findIndex((e) => e.id === id);
+            if (idx === -1) {
+              json(res, 404, { error: `vision model "${id}" not found` });
+              return;
+            }
+            if (models.some((e, i) => i !== idx && e.provider === provider && e.model === model)) {
+              json(res, 409, { error: `vision model "${provider}/${model}" already exists` });
+              return;
+            }
+            models[idx] = { id, provider, model, name, description };
+            if (settingsScope !== void 0) {
+              await settingsScope.replace({ ...options(), visionModels: models });
+            } else {
+              const next = { ...options(), visionModels: models };
+              current = () => next;
+            }
+            json(res, 200, { models: options().visionModels, updated: models[idx] });
+            return;
+          }
+          if (req.method === 'DELETE') {
+            const url = new URL(req.url ?? '/vision-opencode/vision-models', 'http://127.0.0.1');
+            let id = url.searchParams.get('id')?.trim() ?? '';
+            if (id.length === 0) {
+              const body = await readJsonBody(req);
+              id = typeof body?.id === 'string' ? body.id.trim() : '';
+            }
+            if (id.length === 0) {
+              json(res, 400, { error: 'id is required' });
+              return;
+            }
+            const models = [...options().visionModels];
+            const idx = models.findIndex((e) => e.id === id);
+            if (idx === -1) {
+              json(res, 404, { error: `vision model "${id}" not found` });
+              return;
+            }
+            models.splice(idx, 1);
+            // 若删除的是当前选中模型，清空选中
+            const cfg = options();
+            let nextCfg = { ...cfg, visionModels: models };
+            if (cfg.provider !== '' && cfg.model !== '' && !models.some((e) => e.provider === cfg.provider && e.model === cfg.model)) {
+              // 保留选中但不再强制清空，仅提示；此处不自动清空以免误操作
+            }
+            if (settingsScope !== void 0) {
+              await settingsScope.replace(nextCfg);
+            } else {
+              current = () => nextCfg;
+            }
+            json(res, 200, { models: options().visionModels });
+            return;
+          }
+          res.writeHead(405);
+          res.end();
+        } catch (error) {
+          ctx.logger.error('vision-opencode: /vision-opencode/vision-models failed', error);
+          json(res, 500, { error: error?.message ?? String(error) });
+        }
+      },
+    }), 'vision-opencode: vision-models route');
     wctx.effect(() => wctx.webServer.register({
       kind: 'exact',
       path: '/vision-opencode/uninstall',
