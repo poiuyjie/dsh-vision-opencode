@@ -112,8 +112,8 @@ window.__ModuleLoader__.load({
 				".vmo-settings-groupTitle{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:500;line-height:18px;padding:4px 2px 0;margin:0}",
 				".vmo-settings-groupHeader{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-primary,transparent);color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px;cursor:pointer;text-align:left}",
 				".vmo-settings-groupHeader:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}",
-				".vmo-settings-groupChevron{flex:none;font-size:14px;color:var(--dsw-alias-label-tertiary);transition:transform 120ms ease;transform:rotate(0deg)}",
-				".vmo-settings-groupOpen .vmo-settings-groupChevron{transform:rotate(90deg)}",
+				".vmo-settings-groupChevron{flex:none;font-size:14px;color:var(--dsw-alias-label-tertiary);transition:transform 120ms ease;transform:rotate(-90deg)}",
+				".vmo-settings-groupOpen .vmo-settings-groupChevron{transform:rotate(0deg)}",
 				".vmo-settings-groupCount{margin-left:auto;font-size:12px;font-weight:400;color:var(--dsw-alias-label-tertiary)}",
 				".vmo-settings-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:var(--dsw-alias-bg-primary,transparent)}",
 				".vmo-settings-head{display:flex;align-items:center;gap:10px}",
@@ -876,11 +876,25 @@ window.__ModuleLoader__.load({
 						createElement("label",{className:"vmo-field-label"},"提供方 *"),
 						createElement("select",{className:"vmo-input", value: modal.data.providerType || (modal.data.provider==="opencode-go" ? "opencode-go" : (modal.data.provider ? "custom" : "opencode-go")), onChange:function(e){
 							var v=e.target.value;
-							if(v==="opencode-go") updateField("provider","opencode-go");
-							else if(v==="custom") updateField("provider","custom");
+							if(v==="custom") updateField("provider","custom");
+							else updateField("provider",v);
+							updateField("providerType", v);
 						}},
-							createElement("option",{value:"opencode-go"},"opencode-go（官方地址）"),
-							createElement("option",{value:"custom"},"自定义提供方")
+							(function(){
+								var seen={}; var opts=[];
+								opts.push(createElement("option",{value:"opencode-go"},"opencode-go（官方地址）"));
+								seen["opencode-go"]=true;
+								for(var _pi=0; _pi<systemModels.length; _pi++){
+									var _pp=systemModels[_pi].provider;
+									if(!seen[_pp]){ seen[_pp]=true; opts.push(createElement("option",{value:_pp}, _pp)); }
+								}
+								for(var _mi=0; _mi<models.length; _mi++){
+									var _mp=models[_mi].provider;
+									if(!seen[_mp]){ seen[_mp]=true; opts.push(createElement("option",{value:_mp}, _mp)); }
+								}
+								opts.push(createElement("option",{value:"custom"},"自定义提供方"));
+								return opts;
+							})()
 						)
 					),
 					(modal.data.provider==="custom" || modal.data.providerType==="custom" ? createElement("div",{style:{display:"flex",flexDirection:"column",gap:"12px",marginTop:"4px",padding:"10px",border:"1px solid var(--dsw-alias-border-l2)",borderRadius:"8px"}},
