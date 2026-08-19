@@ -32,6 +32,7 @@ window.__ModuleLoader__.load({
 		var IconWarningOutline16 = null;
 		var IconTrashOutline16 = null;
 		var IconPlusOutline16 = null;
+		var IconEditOutline16 = null;
 		var Toast = null;
 		var Modal = null;
 		var Button = null;
@@ -42,6 +43,7 @@ window.__ModuleLoader__.load({
 			IconWarningOutline16 = uiPrimitives.IconWarningOutline16;
 			IconTrashOutline16 = uiPrimitives.IconTrashOutline16;
 			IconPlusOutline16 = uiPrimitives.IconPlusOutline16;
+			IconEditOutline16 = uiPrimitives.IconEditOutline16;
 			Toast = uiPrimitives.Toast;
 			Modal = uiPrimitives.Modal;
 			Button = uiPrimitives.Button;
