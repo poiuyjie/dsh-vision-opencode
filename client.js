@@ -759,7 +759,7 @@ window.__ModuleLoader__.load({
 				if(systemOnly.length>0){
 					emptyChildren.push(createElement("button",{type:"button", className:"vmo-settings-addBtn", style:{marginTop:"8px"}, disabled:busy, onClick: importAll}, "一键导入全部 ("+systemOnly.length+")"));
 				}
-				rowsEl = createElement("div",null, emptyChildren);
+				rowsEl = createElement.apply(null, ["div", null].concat(emptyChildren));
 			} else {
 				var items = [];
 				for(var i=0;i<models.length;i++){
@@ -875,9 +875,13 @@ window.__ModuleLoader__.load({
 
 			var toastEl = toast2 ? createElement("div",{style:{position:"fixed",left:"50%",top:"16px",transform:"translateX(-50%)",background:"var(--dsw-alias-bg-primary,#333)",color:"var(--dsw-alias-label-primary)",border:"1px solid var(--dsw-alias-border-l2)",padding:"8px 12px",borderRadius:"8px",fontSize:"13px",zIndex:10000,boxShadow:"var(--dsw-shadow-lv3)"}}, toast2) : null;
 
-			return createElement("section",{className:"vmo-settings-section", "aria-label":"Vision 模型"},
-				header, intro, systemHint, rowsEl, addBlock, modalEl, delEl, toastEl
-			);
+			var sectionChildren = [header, intro];
+			if (systemHint !== null) sectionChildren.push(systemHint);
+			sectionChildren.push(rowsEl, addBlock);
+			if (modalEl !== null) sectionChildren.push(modalEl);
+			if (delEl !== null) sectionChildren.push(delEl);
+			if (toastEl !== null) sectionChildren.push(toastEl);
+			return createElement.apply(null, ["section", {className:"vmo-settings-section", "aria-label":"Vision 模型"}].concat(sectionChildren));
 		};
 
 
