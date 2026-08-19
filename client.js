@@ -112,8 +112,8 @@ window.__ModuleLoader__.load({
 				".vmo-settings-groupTitle{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:500;line-height:18px;padding:4px 2px 0;margin:0}",
 				".vmo-settings-groupHeader{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-primary,transparent);color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px;cursor:pointer;text-align:left}",
 				".vmo-settings-groupHeader:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}",
-				".vmo-settings-groupChevron{flex:none;font-size:14px;color:var(--dsw-alias-label-tertiary);transition:transform 120ms ease}",
-				".vmo-settings-groupOpen .vmo-settings-groupChevron{transform:rotate(90deg)}",
+				".vmo-settings-groupChevron{flex:none;font-size:14px;color:var(--dsw-alias-label-tertiary);transition:transform 120ms ease;transform:rotate(-90deg)}",
+				".vmo-settings-groupOpen .vmo-settings-groupChevron{transform:rotate(0deg)}",
 				".vmo-settings-groupCount{margin-left:auto;font-size:12px;font-weight:400;color:var(--dsw-alias-label-tertiary)}",
 				".vmo-settings-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:var(--dsw-alias-bg-primary,transparent)}",
 				".vmo-settings-head{display:flex;align-items:center;gap:10px}",
@@ -615,6 +615,9 @@ window.__ModuleLoader__.load({
 			var expandedState = useState({});
 			var expanded = expandedState[0];
 			var setExpanded = expandedState[1];
+			var dismissedState = useState({});
+			var dismissed = dismissedState[0];
+			var setDismissed = dismissedState[1];
 			var isExpanded = function(p){ return expanded[p] === true; };
 			var toggleExpand = function(p){ var n={}; for(var k in expanded) n[k]=expanded[k]; n[p]=!n[p]; setExpanded(n); };
 			var fetchAll = function(){
@@ -644,10 +647,6 @@ window.__ModuleLoader__.load({
 						}
 					}
 					setSystemModels(flat);
-					if(cfg && typeof cfg.provider==="string" && cfg.provider.length>0){
-						var _init={}; for(var _ik in expanded) _init[_ik]=expanded[_ik];
-						if(!_init[cfg.provider]){ _init[cfg.provider]=true; setExpanded(_init); }
-					}
 					setLoading(false);
 					setErr(null);
 				}).catch(function(e){
@@ -730,6 +729,7 @@ window.__ModuleLoader__.load({
 			var systemOnly = [];
 			for(var _j=0; _j<systemModels.length; _j++){
 				var _sm = systemModels[_j];
+				if(dismissed[_sm.provider+"/"+_sm.model]) continue;
 				if(!isInPlugin(_sm.provider, _sm.model)) systemOnly.push(_sm);
 			}
 			var importAll = function(){
@@ -840,7 +840,10 @@ window.__ModuleLoader__.load({
 						systemOnly.map(function(e){
 							var key=e.provider+"/"+e.model;
 							var isImp = importing===key;
-							return createElement("button",{key:key, type:"button", className:"vmo-settings-btn", disabled:busy, onClick:(function(entry){ return function(){ importOne(entry); }; })(e)}, isImp?"导入中…": key);
+							return createElement("span",{key:key, style:{display:"inline-flex",gap:"4px",alignItems:"center"}},
+							createElement("button",{type:"button", className:"vmo-settings-btn", disabled:busy, onClick:(function(entry){ return function(){ importOne(entry); }; })(e)}, isImp?"导入中…": key),
+							createElement("button",{type:"button", className:"vmo-settings-btn", disabled:busy, onClick:(function(k){ return function(){ var d={}; for(var kk in dismissed) d[kk]=dismissed[kk]; d[k]=true; setDismissed(d); }; })(key)}, "×")
+						);
 						})
 					),
 					createElement("button",{type:"button", className:"vmo-settings-btn", disabled:busy, onClick: importAll}, "一键导入全部 ("+systemOnly.length+")")
