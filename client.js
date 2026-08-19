@@ -110,6 +110,11 @@ window.__ModuleLoader__.load({
 				".vmo-settings-rows{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}",
 				".vmo-settings-group{display:flex;flex-direction:column;gap:8px}",
 				".vmo-settings-groupTitle{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:500;line-height:18px;padding:4px 2px 0;margin:0}",
+				".vmo-settings-groupHeader{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-primary,transparent);color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px;cursor:pointer;text-align:left}",
+				".vmo-settings-groupHeader:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}",
+				".vmo-settings-groupChevron{flex:none;font-size:14px;color:var(--dsw-alias-label-tertiary);transition:transform 120ms ease}",
+				".vmo-settings-groupOpen .vmo-settings-groupChevron{transform:rotate(90deg)}",
+				".vmo-settings-groupCount{margin-left:auto;font-size:12px;font-weight:400;color:var(--dsw-alias-label-tertiary)}",
 				".vmo-settings-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:var(--dsw-alias-bg-primary,transparent)}",
 				".vmo-settings-head{display:flex;align-items:center;gap:10px}",
 				".vmo-settings-identity{display:inline-flex;align-items:center;gap:6px;min-width:0}",
@@ -607,6 +612,11 @@ window.__ModuleLoader__.load({
 			var importingState = useState(null);
 			var importing = importingState[0];
 			var setImporting = importingState[1];
+			var expandedState = useState({});
+			var expanded = expandedState[0];
+			var setExpanded = expandedState[1];
+			var isExpanded = function(p){ return expanded[p] === true; };
+			var toggleExpand = function(p){ var n={}; for(var k in expanded) n[k]=expanded[k]; n[p]=!n[p]; setExpanded(n); };
 			var fetchAll = function(){
 				setLoading(true);
 				Promise.all([
@@ -634,6 +644,10 @@ window.__ModuleLoader__.load({
 						}
 					}
 					setSystemModels(flat);
+					if(cfg && typeof cfg.provider==="string" && cfg.provider.length>0){
+						var _init={}; for(var _ik in expanded) _init[_ik]=expanded[_ik];
+						if(!_init[cfg.provider]){ _init[cfg.provider]=true; setExpanded(_init); }
+					}
 					setLoading(false);
 					setErr(null);
 				}).catch(function(e){
@@ -805,9 +819,14 @@ window.__ModuleLoader__.load({
 						)
 						));
 					}
-					groupSections.push(createElement("section",{key:gProvider, className:"vmo-settings-group"},
-						createElement("div",{className:"vmo-settings-groupTitle"}, gProvider + " · " + gModels.length + " 个模型"),
-						createElement("ul",{className:"vmo-settings-rows", style:{marginTop:"0"}}, gItems)
+					var _open = isExpanded(gProvider);
+					groupSections.push(createElement("section",{key:gProvider, className:"vmo-settings-group"+(_open ? " vmo-settings-groupOpen":"")},
+						createElement("button",{type:"button", className:"vmo-settings-groupHeader", "aria-expanded": _open, onClick:(function(p){ return function(){ toggleExpand(p); }; })(gProvider)},
+							createElement("span",{className:"vmo-settings-groupChevron"}, IconChevronDownOutline14 ? createElement(IconChevronDownOutline14,{size:12}) : "›"),
+							createElement("span",null, gProvider),
+							createElement("span",{className:"vmo-settings-groupCount"}, gModels.length + " 个模型")
+						),
+						_open ? createElement("ul",{className:"vmo-settings-rows", style:{marginTop:"0"}}, gItems) : null
 					));
 				}
 				rowsEl = createElement("div",{style:{display:"flex",flexDirection:"column",gap:"16px"}}, groupSections);
