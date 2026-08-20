@@ -1486,13 +1486,33 @@ window.__ModuleLoader__.load({
 				);
 				editorContent = content;
 			}
+			// 编辑器（添加/编辑提供方）改用 Modal 浮层渲染，与 pickerEl/delEl 一致——避免内联展开时
+			// 把 opencode-go 等下方分组「推下」。Modal 不可用时兜底自渲染 overlay。
+			var closeEditor = function(){ setModal(null); setPicker(null); };
+			var editorModal = null;
+			if(modal){
+				if(Modal){
+					editorModal = createElement(Modal,{
+						open:true,
+						onClose:closeEditor,
+						title:modalTitle,
+						description:modalDesc,
+						closeLabel:"关闭",
+						footer:footer
+					}, editorContent);
+				} else {
+					editorModal = createElement("div",{className:"vmo-modal-overlay", onClick:function(e){ if(e.target===e.currentTarget) closeEditor(); }},
+						createElement("div",{className:"vmo-modal", onClick:function(e){ e.stopPropagation(); }},
+							createElement("h4",{className:"vmo-modal-title"}, modalTitle),
+							createElement("p",{style:{margin:0,fontSize:"13px",lineHeight:"20px",color:"var(--dsw-alias-label-secondary)"}}, modalDesc),
+							editorContent,
+							footer
+						)
+					);
+				}
+			}
 			var addBlock = modal
-				? createElement("div",{className:C.addBlock},
-					createElement("div",{className:C.addCard},
-						editorContent,
-						footer
-					)
-				)
+				? null
 				: createElement("div",{className:C.addActions},
 					createElement("button",{type:"button", className:C.addButton, disabled:busy, onClick:function(){
 						var firstProvider = "";
@@ -1626,6 +1646,7 @@ window.__ModuleLoader__.load({
 			if (systemHint !== null) sectionChildren.push(systemHint);
 			sectionChildren.push(rowsEl, addBlock);
 			if (delEl !== null) sectionChildren.push(delEl);
+			if (editorModal !== null) sectionChildren.push(editorModal);
 			if (pickerEl !== null) sectionChildren.push(pickerEl);
 			if (toastEl !== null) sectionChildren.push(toastEl);
 			return createElement.apply(null, ["section", {className:C.section, "aria-label":"Vision 模型"}].concat(sectionChildren));
