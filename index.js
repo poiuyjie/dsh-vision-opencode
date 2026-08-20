@@ -507,7 +507,10 @@ export function apply(ctx, entry) {
     // 开启（或缺省之外的显式 true）：不传 → 走提供方默认档位
     if (route.visionReasoning === true) return void 0;
     const key = route.provider + '\0' + route.model;
-    if (visionEffortCache !== null && visionEffortCache.key === key) return visionEffortCache.param;
+    if (visionEffortCache !== null && visionEffortCache.key === key) {
+      // 缓存值统一归一化：'' → undefined（不传），避免把空字符串当档位发给适配器
+      return visionEffortCache.param === '' ? void 0 : visionEffortCache.param;
+    }
     let param = 'off';
     try {
       const info = await ctx.llm.resolveModelInfo(route.provider, route.model);
@@ -518,7 +521,7 @@ export function apply(ctx, entry) {
     } catch {
       /* 元数据不可用时按 pi-ai 惯例用 'off' */
     }
-    visionEffortCache = { key, param };
+    visionEffortCache = { key, param }; // param 可能为 ''，缓存命中时统一归一化
     return param === '' ? void 0 : param;
   }
 
