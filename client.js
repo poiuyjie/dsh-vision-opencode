@@ -61,8 +61,8 @@ window.__ModuleLoader__.load({
 			styleTag.dataset.plugin = "dsh-vision-opencode";
 			styleTag.dataset.pluginCss = CSS_ID;
 			styleTag.textContent = [
-				/* 根：模型胶囊 + 推理胶囊并列一行，锚定向上展开的菜单 */
-				".vmo-root{position:relative;min-width:0;display:flex;align-items:center;gap:2px}",
+				/* 根：锚定向上展开的菜单 */
+				".vmo-root{position:relative;min-width:0}",
 				/* 触发器（Figma 313:14108 ToggleButton）：28px 胶囊、13/20/500 次要色，
 				   hover 填充，与官方模型选择器同一族 chip */
 				".vmo-trigger{display:flex;align-items:center;gap:4px;min-width:0;max-width:220px;height:28px;padding:0 4px 0 8px;border:none;border-radius:24px;outline:none;background:transparent;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;font-weight:500;cursor:pointer}",
@@ -86,21 +86,15 @@ window.__ModuleLoader__.load({
 				/* 菜单卡片：表面令牌与官方 Menu 原语一致；滚动条重绑 l2 高度令牌 */
 				".vmo-menu{position:absolute;right:0;bottom:calc(100% + 8px);z-index:20;display:flex;flex-direction:column;width:min(240px,calc(100vw - 32px));max-height:min(360px,calc(100vh - 96px));overflow:hidden;padding:4px;border:1px solid var(--dsw-alias-border-inverted);border-radius:12px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2)}",
 				".vmo-status,.vmo-empty{padding:10px;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}",
-			/* 推理胶囊：与模型触发器同族（28px 胶囊、caption 前缀 + 当前值 + 箭头），
-			   与模型胶囊并列；菜单从自身向上弹出，不再嵌套在模型卡片里 */
-			".vmo-effort-pill{display:flex;align-items:center;gap:4px;min-width:0;max-width:132px;height:28px;padding:0 4px 0 8px;border:none;border-radius:24px;outline:none;background:transparent;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;font-weight:500;cursor:pointer}",
-			".vmo-effort-pill:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}",
-			".vmo-effort-pill:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-border-l3)}",
-			".vmo-effort-pill:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}",
-			".vmo-effort-pill-tag{flex:0 0 auto;color:var(--dsw-alias-label-caption)}",
-			".vmo-effort-pill-val{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
-			".vmo-effort-menu{position:absolute;right:0;bottom:calc(100% + 6px);z-index:30;display:flex;flex-direction:column;min-width:140px;padding:4px;border:1px solid var(--dsw-alias-border-inverted);border-radius:12px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-shadow-lv3)}",
-			".vmo-effort-option{display:flex;flex-direction:column;gap:0;width:100%;min-height:38px;padding:5px 8px;border:none;border-radius:10px;outline:none;background:transparent;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer}",
-			".vmo-effort-option:hover:not(:disabled):not(.is-on),.vmo-effort-option:focus-visible{background:var(--dsw-alias-interactive-bg-hover)}",
-			".vmo-effort-option:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}",
-			".vmo-effort-option.is-on{background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-state-business-primary)}",
-			".vmo-effort-opt-label{font-size:13px;line-height:20px;font-weight:500}",
-			".vmo-effort-hint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}",
+			/* 推理开关（放在 Vision 菜单底部，内联分段控件，无弹出层故不会与列表重叠）：
+			   深浅色跟随 shell 令牌 */
+			".vmo-effort{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 4px 4px;padding:8px 8px 10px;border-top:1px solid var(--dsw-alias-border-l2)}",
+			".vmo-effort-label{font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary);flex:none}",
+			".vmo-effort-seg{display:flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-interactive-bg-hover-solid,transparent)}",
+			".vmo-effort-seg-btn{min-width:54px;height:24px;padding:0 10px;border:none;border-radius:6px;outline:none;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:24px;cursor:pointer}",
+			".vmo-effort-seg-btn:hover:not(:disabled):not(.is-on){background:var(--dsw-alias-interactive-bg-hover)}",
+			".vmo-effort-seg-btn:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}",
+			".vmo-effort-seg-btn.is-on{background:var(--dsw-alias-bg-layer-2,var(--dsw-specific-menu));color:var(--dsw-alias-state-business-primary);font-weight:600;box-shadow:var(--dsw-shadow-lv1)}",
 				/* 加载失败条（官方 error 表面）+ 重试入口 */
 				".vmo-error{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:4px;padding:7px 8px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}",
 				".vmo-retry{flex:0 0 auto;padding:0;border:none;background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}",
@@ -194,9 +188,6 @@ window.__ModuleLoader__.load({
 			var openState = useState(false);
 			var open = openState[0];
 			var setOpen = openState[1];
-			var effortOpenState = useState(false);
-			var effortOpen = effortOpenState[0];
-			var setEffortOpen = effortOpenState[1];
 			var toastState = useState(null);
 			var toast = toastState[0];
 			var setToast = toastState[1];
@@ -205,7 +196,6 @@ window.__ModuleLoader__.load({
 			var setProgress = progressState[1];
 			var rootRef = useRef(null);
 			var triggerRef = useRef(null);
-			var effortTriggerRef = useRef(null);
 			var itemRefs = useRef([]);
 			var toastSeq = useRef(0);
 			var loadRef = useRef(null);
@@ -213,11 +203,6 @@ window.__ModuleLoader__.load({
 			if (menuIdRef.current === null) {
 				menuSeq += 1;
 				menuIdRef.current = "vmo-menu-" + menuSeq;
-			}
-			var effortMenuIdRef = useRef(null);
-			if (effortMenuIdRef.current === null) {
-				menuSeq += 1;
-				effortMenuIdRef.current = "vmo-effort-menu-" + menuSeq;
 			}
 
 			useEffect(function() {
@@ -326,19 +311,16 @@ window.__ModuleLoader__.load({
 
 			// 打开期间：点击外部关闭（官方 ModelSelect 同款 mousedown 判定）
 			useEffect(function() {
-				if (!open && !effortOpen) return;
+				if (!open) return;
 				var onPointerDown = function(event) {
 					var node = rootRef.current;
-					if (node !== null && !node.contains(event.target)) {
-						setOpen(false);
-						setEffortOpen(false);
-					}
+					if (node !== null && !node.contains(event.target)) setOpen(false);
 				};
 				document.addEventListener("mousedown", onPointerDown);
 				return function() {
 					document.removeEventListener("mousedown", onPointerDown);
 				};
-			}, [open, effortOpen]);
+			}, [open]);
 
 			var close = function(restoreFocus) {
 				setOpen(false);
@@ -347,7 +329,6 @@ window.__ModuleLoader__.load({
 				}
 			};
 			var show = function() {
-				setEffortOpen(false);
 				setOpen(true);
 				if (loadRef.current !== null) loadRef.current(false);
 			};
@@ -367,10 +348,9 @@ window.__ModuleLoader__.load({
 				if (items[next] !== undefined) items[next].focus();
 			};
 			var onRootKeyDown = function(event) {
-				if (event.key === "Escape" && (open || effortOpen)) {
+				if (event.key === "Escape" && open) {
 					event.preventDefault();
-					if (open) close(true);
-					if (effortOpen) setEffortOpen(false);
+					close(true);
 					return;
 				}
 				if (!open) return;
@@ -444,7 +424,6 @@ window.__ModuleLoader__.load({
 					})
 					.then(function(cfg) {
 						setBusy(false);
-						setEffortOpen(false);
 						if (cfg !== null && typeof cfg === "object") setCurrent(cfg);
 					})
 					.catch(function(error) {
@@ -569,6 +548,28 @@ window.__ModuleLoader__.load({
 				menuChildren.push(createElement("div", { className: "vmo-groups", key: "groups" }, sectionNodes));
 			}
 
+			// 底部：识图推理开关（开启=提供方默认档位；关闭=禁用思考）。
+			// 内联分段控件，无弹出层，不会与上面的模型列表重叠；深浅色跟随 shell 令牌
+			menuChildren.push(createElement("div", { key: "effort", className: "vmo-effort" },
+				createElement("span", { className: "vmo-effort-label" }, "推理"),
+				createElement("div", { className: "vmo-effort-seg", role: "radiogroup", "aria-label": "识图模型推理开关", title: reasoningOn ? "开启：识图时让模型思考（提供方默认档位）" : "关闭：识图不思考，更快更省 token" },
+					createElement("button", {
+						type: "button",
+						role: "radio",
+						"aria-checked": reasoningOn,
+						disabled: busy,
+						className: "vmo-effort-seg-btn" + (reasoningOn ? " is-on" : ""),
+						onClick: function() { setEffort(true); }
+					}, "开启"),
+					createElement("button", {
+						type: "button",
+						role: "radio",
+						"aria-checked": !reasoningOn,
+						disabled: busy,
+						className: "vmo-effort-seg-btn" + (!reasoningOn ? " is-on" : ""),
+						onClick: function() { setEffort(false); }
+					}, "关闭"))))
+
 			// 识图进度文案：占位替换触发器的 "Vision" 标记（模型名保留）；
 			// 运行中官方 TurnStatus 同款微光扫过（deepseek-500 文字 + deepseek-200 光带），
 			// 完成/失败保持绿/红状态色，取消态继承 caption 色
@@ -609,50 +610,6 @@ window.__ModuleLoader__.load({
 					}, progress !== null ? progressLabel : "Vision"),
 					createElement("span", { className: "vmo-trigger-label" }, triggerLabel),
 					chevron),
-				// 推理开关胶囊：与模型胶囊并列，菜单从自身向上弹出（不嵌套卡片，避免重叠）
-				createElement("button", {
-					type: "button",
-					ref: effortTriggerRef,
-					className: "vmo-effort-pill",
-					"aria-haspopup": "menu",
-					"aria-expanded": effortOpen,
-					"aria-controls": effortOpen ? effortMenuIdRef.current : undefined,
-					disabled: busy,
-					title: reasoningOn ? "识图模型推理：开启（提供方默认档位）" : "识图模型推理：关闭",
-					onClick: function() {
-						if (open) setOpen(false);
-						setEffortOpen(!effortOpen);
-					}
-				},
-					createElement("span", { className: "vmo-effort-pill-tag" }, "思考"),
-					createElement("span", { className: "vmo-effort-pill-val" }, reasoningOn ? "开启" : "关闭"),
-					createElement("span", { className: "vmo-chevron" + (effortOpen ? " vmo-chevron-open" : "") },
-						IconChevronDownOutline14 ? createElement(IconChevronDownOutline14, { size: 14 }) : "▾")),
-				effortOpen ? createElement("div", {
-					id: effortMenuIdRef.current,
-					className: "vmo-effort-menu",
-					role: "menu",
-					"aria-label": "识图模型推理开关"
-				},
-					createElement("button", {
-						type: "button",
-						role: "menuitemradio",
-						"aria-checked": reasoningOn,
-						className: "vmo-effort-option" + (reasoningOn ? " is-on" : ""),
-						onClick: function() { setEffort(true); }
-					},
-						createElement("span", { className: "vmo-effort-opt-label" }, "开启"),
-						createElement("span", { className: "vmo-effort-hint" }, "提供方默认档位")),
-					createElement("button", {
-						type: "button",
-						role: "menuitemradio",
-						"aria-checked": !reasoningOn,
-						className: "vmo-effort-option" + (!reasoningOn ? " is-on" : ""),
-						onClick: function() { setEffort(false); }
-					},
-						createElement("span", { className: "vmo-effort-opt-label" }, "关闭"),
-						createElement("span", { className: "vmo-effort-hint" }, "更快 · 更省 token")))
-				: null,
 				open ? createElement("div", {
 					id: menuIdRef.current,
 					className: "vmo-menu",
