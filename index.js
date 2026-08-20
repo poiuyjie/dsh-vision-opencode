@@ -74,6 +74,9 @@ const VisionModelEntry = z.object({
   description: z.string().default(''),
   baseUrl: z.string().default(''),
   requestFormat: z.union([z.const('openai'), z.const('openai-completions'), z.const('openai-responses'), z.const('anthropic')]).default('openai-completions'),
+  /** 该模型的推理策略：''=默认(跟随提供方)；'off'=关闭(提供方支持时生效)；
+   *  'forceOff'=强制关闭(实验：提供方未申报关闭档时，尝试直连网关发禁用参数，不保证成功) */
+  reasoning: z.string().default(''),
 });
 
 /** 识图模型配置 schema（settings 面板自动生成表单）。 */
@@ -84,6 +87,10 @@ const Config = z.object({
   visionModels: z.array(VisionModelEntry).default([]),
   /** llm/stream 瀑布开关：false 时停用「发图自动转换」，只保留工具与选择器（稳定性逃生阀）。 */
   autoConvert: z.boolean().default(true),
+  /** 识图推理开关：false/缺省=关闭思考（默认）；true=开启（走提供方默认档位）。 */
+  visionReasoning: z.boolean().default(false),
+  /** 可选：强制关闭（forceOff）直连网关时用的 API key；留空则尝试读进程环境 OPENCODE_GO_API_KEY。 */
+  apiKey: z.string().default('').hidden(),
   /** 旧版/手动兼容路由；当前版本通常由适配器能力自动识别。 */
   mainProvider: z.string().default(''),
   /** 旧版/手动兼容模型列表；无需随当前主模型切换同步。 */
@@ -153,9 +160,12 @@ export function apply(ctx, entry) {
             description: typeof e.description === 'string' ? e.description.trim() : '',
             baseUrl: typeof e.baseUrl === 'string' ? e.baseUrl.trim() : '',
             requestFormat: e.requestFormat === 'anthropic' ? 'anthropic' : (e.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions'),
+            reasoning: e.reasoning === 'off' ? 'off' : e.reasoning === 'forceOff' ? 'forceOff' : '',
           }))
         : [],
       autoConvert: raw?.autoConvert !== false,
+      visionReasoning: raw?.visionReasoning === true,
+      apiKey: typeof raw?.apiKey === 'string' ? raw.apiKey.trim() : '',
       mainProvider: typeof raw?.mainProvider === 'string' ? raw.mainProvider.trim() : '',
       mainModels: Array.isArray(raw?.mainModels)
         ? raw.mainModels.filter((id) => typeof id === 'string' && id.length > 0)
@@ -515,9 +525,228 @@ export function apply(ctx, entry) {
     }
   }
 
+  /** 
+   * 真 off 判别：pi-ai 的 getSupportedThinkingLevels 对「thinkingLevelMap 缺失」的模型会
+   * 乐观地把 `off/minimal/low/medium/high` 全部算作支持（只有显式 null 和 xhigh/max 才排除），
+   * 那只是「省略 reasoning 参数」= 厂商默认，不代表能真正关掉思考。
+   * 我们以厂商目录（pi-ai provider models）里 `thinkingLevelMap.off` 的真实声明为准：
+   *   - 有真实 wire 值（如 off:"none"）→ 真申报 off
+   *   - 显式 null / 缺失 / 整表缺失 → 未申报 → 应提供「强制关闭」而非「关闭」
+   * 读不到目录（非 pi-ai、版本变化）时回退适配器面值，绝不误报「能关」。
+   */
+  let offCatalogCache = { provider: null, byId: null };
+  /** 尽力定位 pi-ai 的 provider 模型数据文件（JSON）；读不到返回 null。 */
+  async function readPiAiCatalogFile(provider) {
+    const fs = await import('node:fs').catch(() => null);
+    const pathMod = fs ? await import('node:path').catch(() => null) : null;
+    if (!fs || !pathMod) return null;
+    const os = await import('node:os').catch(() => null);
+    const home = (typeof process !== 'undefined' && (process.env.HOME || process.env.USERPROFILE))
+      || (os && typeof os.homedir === 'function' ? os.homedir() : null) || null;
+    const dshRoots = [];
+    if (home) {
+      dshRoots.push((process.env.DSH_HOME || pathMod.join(home, '.dsh')));
+      dshRoots.push(pathMod.join(home, '.dsh', 'profiles'));
+    }
+    dshRoots.push(pathMod.join(process.cwd === void 0 ? '' : process.cwd(), 'node_modules'));
+    const fileName = provider.replace(/[^a-zA-Z0-9_.-]/g, '') + '.json';
+    const candidates = [];
+    for (const root of dshRoots) {
+      if (!root) continue;
+      candidates.push(pathMod.join(root, 'profiles', 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers', 'data', fileName));
+      candidates.push(pathMod.join(root, 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers', 'data', fileName));
+    }
+    for (const file of candidates) {
+      try {
+        if (fs.existsSync(file) && fs.statSync(file).isFile()) return JSON.parse(fs.readFileSync(file, 'utf8'));
+      } catch { /* continue */ }
+    }
+    return null;
+  }
+  async function offCatalog(provider) {
+    if (offCatalogCache.provider === provider) return offCatalogCache.byId;
+    let byId = null;
+    // 优先读 pi-ai 数据 JSON（跨安装位置最稳），失败再动态 import 其 module
+    let raw = await readPiAiCatalogFile(provider);
+    if (raw === null) {
+      try {
+        const mod = await import('@earendil-works/pi-ai/providers/' + provider + '.models');
+        raw = mod && (mod.OPENCODE_GO_MODELS ?? mod.default);
+      } catch { raw = null; }
+    }
+    if (raw && typeof raw === 'object') {
+      // pi-ai 数据有两种形态：扁平 `{ id: entry }`/数组（module 导出），或按 api 分组
+      // `{ 'openai-completions': { id: entry, ... }, ... }`（dist/providers/data/*.json）。
+      // 必须逐层展开到「带字符串 id 的模型条目」——直接把分组对象当条目会使 byId 为空，
+      // 真 off 判别静默失效（每个模型都回退为 offSupported=true，赝品 off 全部复活）。
+      const items = [];
+      const pushEntry = (entry) => {
+        if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string') return;
+        items.push(entry);
+      };
+      const top = Array.isArray(raw) ? raw : Object.values(raw);
+      for (const layer of top) {
+        if (!layer || typeof layer !== 'object') continue;
+        if (typeof layer.id === 'string') { pushEntry(layer); continue; }
+        for (const entry of Object.values(layer)) pushEntry(entry);
+      }
+      if (items.length === 0) {
+        ctx.logger?.warn?.(`vision-opencode: 未能从 ${provider} 目录解析出任何模型条目（形态未知），真 off 判别回退` );
+      }
+      byId = {};
+      for (const entry of items) {
+        byId[entry.id] = {
+          reasoning: entry.reasoning === true || entry.reasoning === false ? entry.reasoning : undefined,
+          tlm: entry.thinkingLevelMap && typeof entry.thinkingLevelMap === 'object' ? entry.thinkingLevelMap : undefined,
+        };
+      }
+    }
+    offCatalogCache = { provider, byId };
+    return byId;
+  }
+  /** 该模型是否「真正申报 off」：true=可用 harness 关闭；false=未申报（应走强制关闭）；null=未知。 */
+  async function trueOffSupported(route) {
+    const byId = await offCatalog(route.provider);
+    if (byId === null) return null;
+    const entry = byId[route.model];
+    if (!entry) return null;
+    // 非思考模型：off 是唯一档（本来就不思考），视为真 off
+    if (entry.reasoning === false) return true;
+    if (entry.reasoning === undefined && !entry.tlm) return null; // 目录没描述 overview → 不臆断
+    const tlm = entry.tlm;
+    if (!tlm) return false;                       // 思考模型但没有任何档位声明 → 未申报 off
+    return tlm.off !== undefined && tlm.off !== null && tlm.off !== ''; // 有真实 wire 值才叫申报
+  }
+  /** 缓存每个 provider/model 由适配器申报的推理档位集合（null=元数据不可用）。 */
+  let reasoningLevelsCache = null;
+  async function supportedLevels(route) {
+    const key = route.provider + '\0' + route.model;
+    if (reasoningLevelsCache !== null && reasoningLevelsCache.key === key) return reasoningLevelsCache.levels;
+    let levels = null;
+    try {
+      const info = await ctx.llm.resolveModelInfo(route.provider, route.model);
+      const efforts = info?.reasoning?.efforts;
+      // efforts 是 {id,name} 对象数组；只取字符串 id，使 Set.has('off')/排序/JSON 都正确
+      if (Array.isArray(efforts)) {
+        const ids = efforts
+          .map((e) => (typeof e === 'string' ? e : (e && typeof e.id === 'string' ? e.id : '')))
+          .filter((s) => s.length > 0);
+        levels = new Set(ids);
+      }
+    } catch { /* 元数据不可用：levels=null */ }
+    reasoningLevelsCache = { key, levels };
+    return levels;
+  }
+  /** 活动模型条目的推理策略：''=默认(跟随)；'off'=关闭；'forceOff'=强制关闭(实验)。
+   *  不在自管列表里则回退全局 visionReasoning（true=''，否则='off'，保持旧默认=关闭）。 */
+  function activeStrategy(route) {
+    const entry = (route.visionModels || []).find((e) => e.provider === route.provider && e.model === route.model);
+    if (entry && (entry.reasoning === 'off' || entry.reasoning === 'forceOff')) return entry.reasoning;
+    return route.visionReasoning === true ? '' : 'off';
+  }
+  /** 经 harness 通道能表达的关闭档位：仅当**真申报**了 'off'（厂商目录 thinkingLevelMap.off 有
+   *  真实 wire 值）才传 'off'；否则不传（尽力而为；pi-ai 面值里的 off 只是省略参数=厂商默认，无效）。 */
+  async function visionReasoningParam(route, strategy) {
+    if (strategy !== 'off' && strategy !== 'forceOff') return void 0;
+    const off = await trueOffSupported(route);
+    // 真 off / 未知（读不到目录）→ 按适配器面值判断 fallback
+    if (off === false) return void 0;
+    if (off === true) return 'off';
+    const levels = await supportedLevels(route);
+    return levels !== null && levels.has('off') ? 'off' : void 0;
+  }
+  /** 直连网关时「关闭思考」的候选 wire 参数（各家命名混乱，无统一标准）：
+   *  1) thinking:{type:disabled}   —— 大多数 OpenAI 兼容厂商都认
+   *  2) reasoning_effort:"none"     —— 一部分厂商（已实测 MiMo 生效）
+   *  3) enable_thinking:false       —— Qwen3 系原生
+   *  按顺序试，并用响应里的 reasoning_tokens 反馈：0=真关了（记住该参数，后续直连复用）；
+   *  >0=没关掉换下一个；厂商拒绝该参数（4xx/5xx）也换下一个。全部不理想就返回第一个有结果的文本
+   *  （尽力而为，UI 已标注「不保证成功」）。 */
+  const FORCE_OFF_CANDIDATES = [
+    { key: 'THINKING_DISABLED', patch: { thinking: { type: 'disabled' } } },
+    { key: 'REASONING_EFFORT_NONE', patch: { reasoning_effort: 'none' } },
+    { key: 'ENABLE_THINKING_FALSE', patch: { enable_thinking: false } },
+  ];
+  let forceOffWinning = null; // { route, candKey }
+  async function callVisionForceOffDirect(ref, signal, question, route) {
+    try {
+      if (route.provider !== 'opencode-go') return void 0;
+      const apiKey = (typeof route.apiKey === 'string' && route.apiKey.length > 0)
+        ? route.apiKey
+        : (typeof process !== 'undefined' && process.env && process.env.OPENCODE_GO_API_KEY);
+      const bytes = ref && ref.bytes;
+      if (!apiKey || !bytes || (typeof bytes.byteLength === 'number' && bytes.byteLength === 0)) return void 0;
+      const mediaType = (ref && typeof ref.mediaType === 'string' && ref.mediaType) || 'image/png';
+      const b64 = Buffer.from(bytes).toString('base64');
+      const baseMessage = {
+        role: 'user',
+        content: [
+          { type: 'text', text: question !== void 0 && typeof question === 'string' && question.trim().length > 0
+            ? `请分析这张图片：${question.trim()}`
+            : '请详细分析这张图片的内容（中文）。' },
+          { type: 'image_url', image_url: { url: `data:${mediaType};base64,${b64}` } },
+        ],
+      };
+      const routeKey = route.provider + '\0' + route.model;
+      // 已为这个模型实测出生效的关闭参数 → 快路径，直接复用
+      let order = FORCE_OFF_CANDIDATES;
+      if (forceOffWinning !== null && forceOffWinning.route === routeKey) {
+        const winCand = FORCE_OFF_CANDIDATES.find((c) => c.key === forceOffWinning.candKey);
+        if (winCand !== void 0) order = [winCand];
+      }
+      let bestText = void 0;
+      for (const cand of order) {
+        const body = Object.assign({ model: route.model, max_tokens: 1024, messages: [baseMessage] }, cand.patch);
+        let resp;
+        try {
+          resp = await fetch('https://opencode.ai/zen/go/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+            body: JSON.stringify(body),
+            signal,
+          });
+        } catch { continue; }
+        if (!resp.ok) continue; // 该参数厂商不认 → 换一个
+        let data;
+        try { data = await resp.json(); } catch { continue; }
+        const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+        const text = Array.isArray(content)
+          ? content.filter((b) => b && b.type === 'text').map((b) => b.text).join('')
+          : (typeof content === 'string' ? content : '');
+        if (text.trim().length === 0) continue;
+        const usage = data && data.usage || {};
+        const rt = (typeof usage.reasoning_tokens === 'number' ? usage.reasoning_tokens
+          : (usage.completion_tokens_details && typeof usage.completion_tokens_details.reasoning_tokens === 'number'
+            ? usage.completion_tokens_details.reasoning_tokens : void 0));
+        if (typeof bestText !== 'string') bestText = text.trim();
+        if (rt === 0) {
+          forceOffWinning = { route: routeKey, candKey: cand.key }; // 真关了 → 记忆
+          return text.trim();
+        }
+        if (rt === void 0) {
+          // 厂商没报 reasoning_tokens：无法确认但更可能已关 → 采用并记忆
+          forceOffWinning = { route: routeKey, candKey: cand.key };
+          return text.trim();
+        }
+        // rt>0：这参数没关掉思考 → 试下一个
+      }
+      return bestText; // 全试过：至少一个成功拿到文本 → 尽力而为；全失败 → undefined
+    } catch { return void 0; }
+  }
+
   /** 单次识图子调用：组装带图消息 → 流式请求识图模型 → 返回纯文本。 */
   async function callVisionOnce(ref, signal, question) {
     const route = options();
+    // 强制关闭 + 未真申报 off → 尝试直连网关（自适应多参数试出该厂商的关闭方式，不保证成功）
+    if (activeStrategy(route) === 'forceOff') {
+      const off = await trueOffSupported(route);
+      // 读不到目录时按适配器面值是否有 off 兜底判定
+      const hasOff = off === true || (off === null && (await supportedLevels(route))?.has('off'));
+      if (!hasOff) {
+        const directText = await callVisionForceOffDirect(ref, signal, question, route);
+        if (directText !== void 0) return directText;
+      }
+    }
     const message = createUserMessage({
       content: [
         {
@@ -531,12 +760,14 @@ export function apply(ctx, entry) {
       source: { kind: 'plugin', plugin: 'vision-opencode' },
     });
     const assembler = new BlockAssembler();
+    const reasoningEffort = await visionReasoningParam(route, activeStrategy(route));
     for await (const chunk of ctx.llm.stream({
       provider: route.provider,
       model: route.model,
       system: VISION_SYSTEM_PROMPT,
       messages: [message],
       temperature: 0.2,
+      ...(reasoningEffort !== void 0 ? { reasoningEffort } : {}),
       signal,
       [BYPASS]: true,
     })) {
@@ -1016,6 +1247,8 @@ export function apply(ctx, entry) {
               json(res, 400, { error: 'provider and model strings are required' });
               return;
             }
+            // 识图推理开关：true=开启（提供方默认档位）；false/缺省=关闭思考
+            const visionReasoning = body?.visionReasoning === true;
             // 精确排除本插件管理的文本主路由，并校验候选模型确实声明了 image 输入。
             // 允许插件自管 visionModels 中的自定义模型（即使宿主 catalog 未标记 image）。
             let declaredVision = false;
@@ -1031,10 +1264,10 @@ export function apply(ctx, entry) {
               return;
             }
             if (settingsScope !== void 0) {
-              // 只更新识图模型，保留其余配置（autoConvert/mainProvider/mainModels）。
-              await settingsScope.replace({ ...options(), provider, model });
+              // 更新识图模型（及可选推理开关），保留其余配置（autoConvert/mainProvider/mainModels）。
+              await settingsScope.replace({ ...options(), provider, model, visionReasoning });
             } else {
-              const next = { ...options(), provider, model };
+              const next = { ...options(), provider, model, visionReasoning };
               current = () => next;
             }
             json(res, 200, publicOptions());
@@ -1183,6 +1416,7 @@ export function apply(ctx, entry) {
             const description = typeof body?.description === 'string' ? body.description.trim() : '';
             const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
             const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : (body?.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions');
+            const reasoning = body?.reasoning === 'off' ? 'off' : body?.reasoning === 'forceOff' ? 'forceOff' : '';
             let id = typeof body?.id === 'string' ? body.id.trim() : '';
             if (provider.length === 0 || model.length === 0) {
               json(res, 400, { error: 'provider and model are required' });
@@ -1198,7 +1432,7 @@ export function apply(ctx, entry) {
               json(res, 409, { error: `vision model "${provider}/${model}" already exists` });
               return;
             }
-            const entry = { id, provider, model, name, description, baseUrl, requestFormat };
+            const entry = { id, provider, model, name, description, baseUrl, requestFormat, reasoning };
             models.push(entry);
             if (settingsScope !== void 0) {
               await settingsScope.replace({ ...options(), visionModels: models });
@@ -1218,6 +1452,7 @@ export function apply(ctx, entry) {
             const description = typeof body?.description === 'string' ? body.description.trim() : '';
             const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
             const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : (body?.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions');
+            const reasoning = body?.reasoning === 'off' ? 'off' : body?.reasoning === 'forceOff' ? 'forceOff' : '';
             if (id.length === 0 || provider.length === 0 || model.length === 0) {
               json(res, 400, { error: 'id, provider and model are required' });
               return;
@@ -1232,7 +1467,7 @@ export function apply(ctx, entry) {
               json(res, 409, { error: `vision model "${provider}/${model}" already exists` });
               return;
             }
-            models[idx] = { id, provider, model, name, description, baseUrl, requestFormat };
+            models[idx] = { id, provider, model, name, description, baseUrl, requestFormat, reasoning };
             if (settingsScope !== void 0) {
               await settingsScope.replace({ ...options(), visionModels: models });
             } else {
@@ -1282,6 +1517,35 @@ export function apply(ctx, entry) {
         }
       },
     }), 'vision-opencode: vision-models route');
+    wctx.effect(() => wctx.webServer.register({
+      kind: 'exact',
+      path: '/vision-opencode/reasoning-levels',
+      handler: async (req, res) => {
+        try {
+          if (req.method !== 'GET') { res.writeHead(405); res.end(); return; }
+          const url = new URL(req.url ?? '/vision-opencode/reasoning-levels', 'http://127.0.0.1');
+          const provider = (url.searchParams.get('provider') ?? '').trim().slice(0, 256);
+          const model = (url.searchParams.get('model') ?? '').trim().slice(0, 256);
+          if (provider.length === 0 || model.length === 0) {
+            json(res, 400, { error: 'provider and model are required' });
+            return;
+          }
+          const levels = await supportedLevels({ provider, model });
+          const off = await trueOffSupported({ provider, model });
+          // offSupported：真申报（true）/未申报（false）/未知（null）→按面值兜底
+          const offSupported = off === null
+            ? (levels === null ? true : levels.has('off'))
+            : off;
+          // 展示档位：未真申报 off 时把赝品 off 从列表剔除，避免「档位里有 off 却不给关闭」的自相矛盾
+          let efforts = levels === null ? [] : [...levels].sort();
+          if (offSupported === false) efforts = efforts.filter((id) => id !== 'off');
+          json(res, 200, { provider, model, efforts, offSupported });
+        } catch (error) {
+          ctx.logger.error('vision-opencode: /vision-opencode/reasoning-levels failed', error);
+          json(res, 500, { error: error?.message ?? String(error) });
+        }
+      },
+    }), 'vision-opencode: reasoning-levels route');
     wctx.effect(() => wctx.webServer.register({
       kind: 'exact',
       path: '/vision-opencode/uninstall',

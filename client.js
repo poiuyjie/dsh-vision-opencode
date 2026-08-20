@@ -92,6 +92,22 @@ window.__ModuleLoader__.load({
 				/* 菜单卡片：表面令牌与官方 Menu 原语一致；滚动条重绑 l2 高度令牌 */
 				".vmo-menu{position:absolute;right:0;bottom:calc(100% + 8px);z-index:20;display:flex;flex-direction:column;width:min(240px,calc(100vw - 32px));max-height:min(360px,calc(100vh - 96px));overflow:hidden;padding:4px;border:1px solid var(--dsw-alias-border-inverted);border-radius:12px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2)}",
 				".vmo-status,.vmo-empty{padding:10px;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}",
+			/* 推理开关（放在 Vision 菜单底部，内联分段控件，无弹出层故不会与列表重叠）：
+			   深浅色跟随 shell 令牌 */
+			".vmo-effort{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 4px 4px;padding:8px 8px 10px;border-top:1px solid var(--dsw-alias-border-l2)}",
+			".vmo-effort-label{font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary);flex:none}",
+			".vmo-effort-seg{display:flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-interactive-bg-hover-solid,transparent)}",
+			".vmo-effort-seg-btn{min-width:54px;height:24px;padding:0 10px;border:none;border-radius:6px;outline:none;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:24px;cursor:pointer}",
+			".vmo-effort-seg-btn:hover:not(:disabled):not(.is-on){background:var(--dsw-alias-interactive-bg-hover)}",
+			".vmo-effort-seg-btn:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}",
+			".vmo-effort-seg-btn.is-on{background:var(--dsw-alias-bg-layer-2,var(--dsw-specific-menu));color:var(--dsw-alias-state-business-primary);font-weight:600;box-shadow:var(--dsw-shadow-lv1)}",
+			".vmo-settings-reasoning{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-primary,transparent)}",
+			".vmo-settings-reasoning-copy{display:flex;flex-direction:column;gap:2px;min-width:0}",
+			".vmo-settings-reasoning-title{font-size:14px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-primary)}",
+			".vmo-settings-reasoning-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
+			".vmo-settings-reason-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l1)}",
+			".vmo-settings-reason-label{font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}",
+			".vmo-settings-reason-hint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}",
 				/* 加载失败条（官方 error 表面）+ 重试入口 */
 				".vmo-error{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:4px;padding:7px 8px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}",
 				".vmo-retry{flex:0 0 auto;padding:0;border:none;background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}",
@@ -430,6 +446,31 @@ window.__ModuleLoader__.load({
 					});
 			};
 
+			// 识图推理开关：true=开启（提供方默认档位）；false/缺省=关闭思考。
+			// 关闭时后端按适配器实际支持的档位名转译（pi-ai 为 off），无需在此纠结各家命名。
+			var reasoningOn = current !== null && typeof current === "object" && current.visionReasoning === true;
+			var setEffort = function(on) {
+				if (current === null || typeof current.provider !== "string" || typeof current.model !== "string") return;
+				setBusy(true);
+				fetch("/vision-opencode/config", {
+					method: "PUT",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ provider: current.provider, model: current.model, visionReasoning: on })
+				})
+					.then(function(resp) {
+						if (!resp.ok) throw new Error("HTTP " + resp.status);
+						return resp.json();
+					})
+					.then(function(cfg) {
+						setBusy(false);
+						if (cfg !== null && typeof cfg === "object") setCurrent(cfg);
+					})
+					.catch(function(error) {
+						setBusy(false);
+						announceSelectError(error && typeof error.message === "string" && error.message.length > 0 ? error.message : String(error));
+					});
+			};
+
 			// 分节：按供应商分组列出支持图片的模型；
 			// 当前配置若不在目录里（如目录加载失败），保留为可见的"当前配置"节
 			var sections = [];
@@ -545,6 +586,28 @@ window.__ModuleLoader__.load({
 				}
 				menuChildren.push(createElement("div", { className: "vmo-groups", key: "groups" }, sectionNodes));
 			}
+
+			// 底部：识图推理开关（开启=提供方默认档位；关闭=禁用思考）。
+			// 内联分段控件，无弹出层，不会与上面的模型列表重叠；深浅色跟随 shell 令牌
+			menuChildren.push(createElement("div", { key: "effort", className: "vmo-effort" },
+				createElement("span", { className: "vmo-effort-label" }, "推理"),
+				createElement("div", { className: "vmo-effort-seg", role: "radiogroup", "aria-label": "识图模型推理开关", title: reasoningOn ? "开启：识图时让模型思考（提供方默认档位）" : "关闭：识图不思考，更快更省 token" },
+					createElement("button", {
+						type: "button",
+						role: "radio",
+						"aria-checked": reasoningOn,
+						disabled: busy,
+						className: "vmo-effort-seg-btn" + (reasoningOn ? " is-on" : ""),
+						onClick: function() { setEffort(true); }
+					}, "开启"),
+					createElement("button", {
+						type: "button",
+						role: "radio",
+						"aria-checked": !reasoningOn,
+						disabled: busy,
+						className: "vmo-effort-seg-btn" + (!reasoningOn ? " is-on" : ""),
+						onClick: function() { setEffort(false); }
+					}, "关闭"))))
 
 			// 识图进度文案：占位替换触发器的 "Vision" 标记（模型名保留）；
 			// 运行中官方 TurnStatus 同款微光扫过（deepseek-500 文字 + deepseek-200 光带），
@@ -903,9 +966,121 @@ window.__ModuleLoader__.load({
 				return config && config.provider===vm.provider && config.model===vm.model;
 			};
 
-			var header = createElement("div",{className:"zGbnIq_rowHead", style:{marginBottom:"0"} },
-				createElement("h3",{className:C.title},"Vision 模型"),
-				createElement("span",{className:C.modelCatalogMeta}, "插件自管 · 与主模型提供方独立")
+			// 每模型：提供方申报的推理档位（懒加载缓存）
+			// 去重依据改为「持久 ref 同步锁」而不是状态实时值：
+			// 状态一写入就会引发渲染 → effect 若依赖状态就会再次触发 → 死循环刷新风暴。
+			var useRef = react.useRef;
+			var reasonInfoState = useState({});
+			var reasonInfo = reasonInfoState[0];
+			var setReasonInfo = reasonInfoState[1];
+			var reasonLoadingState = useState({});
+			var reasonLoading = reasonLoadingState[0];
+			var setReasonLoading = reasonLoadingState[1];
+			var reasonSeenState = useRef({});
+			var reasonSeen = reasonSeenState.current;
+			var ensureReasonInfo = function(vm){
+				if(!vm) return;
+				var k = vm.provider+"/"+vm.model;
+				if(reasonSeen[k]) return;   // 同步持久锁：第一个请求到来前就已锁定，后续任何调用直接短路
+				reasonSeen[k] = true;
+				var nl = {}; for(var i in reasonLoading) nl[i]=reasonLoading[i]; nl[k]=true; setReasonLoading(nl);
+				fetch("/vision-opencode/reasoning-levels?provider="+encodeURIComponent(vm.provider)+"&model="+encodeURIComponent(vm.model), {headers:{accept:"application/json"}})
+					.then(function(r){ return r.json().catch(function(){ return null; }); })
+					.then(function(j){
+						// 用函数式更新合并，而不是从闭包快照复制：
+						// 多个模型并发完成时，基于 React 保证的最新 prev 合并，互不覆盖
+						setReasonInfo(function(prev){
+							var n = {}; for(var x in prev) n[x]=prev[x];
+							var eff = (j && Array.isArray(j.efforts)) ? j.efforts : [];
+							// offSupported 三态：布尔=host 真值；其他(旧 host/未知)=按 efforts 兜底
+							var os = (j && typeof j.offSupported === 'boolean')
+								? j.offSupported
+								: (eff.some(function(e){ var id=typeof e==="string"?e:((e&&e.id)||""); return id==="off"; }));
+							n[k]={ efforts: eff, offSupported: os };
+							return n;
+						});
+						setReasonLoading(function(prev){
+							var n2 = {}; for(var y in prev) n2[y]=prev[y]; delete n2[k]; return n2;
+						});
+					}).catch(function(){
+						setReasonInfo(function(prev){
+							var n = {}; for(var x in prev) n[x]=prev[x]; n[k]={ efforts:[], offSupported:true }; return n;
+						});
+						setReasonLoading(function(prev){
+							var n2 = {}; for(var y in prev) n2[y]=prev[y]; delete n2[k]; return n2;
+						});
+					});
+			};
+			// 每模型：保存推理策略
+			var updateReasoning = function(vm, value){
+				if(busy || !vm) return;
+				setBusy(true);
+				fetch("/vision-opencode/vision-models", {method:"PUT", headers:{"content-type":"application/json"}, body: JSON.stringify({id: vm.id, provider: vm.provider, model: vm.model, name: vm.name||"", description: vm.description||"", baseUrl: vm.baseUrl||"", requestFormat: vm.requestFormat||"openai", reasoning: value})})
+					.then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, body:j}; }); })
+					.then(function(res){
+						setBusy(false);
+						if(!res.ok){ showToast(res.body.error || ("保存失败 HTTP "+res.status)); return; }
+						setModels(res.body.models || []);
+						var label = value==="" ? "已设为默认（跟随提供方）" : value==="off" ? "已关闭思考（提供方支持时生效）" : "已设为强制关闭（实验，不保证成功）";
+						showToast(label);
+					}).catch(function(e){ setBusy(false); showToast(String(e)); });
+			};
+
+			// 每模型推理策略行：显示提供方申报的档位；有「关闭」档才提供关闭，
+			// 否则提供「强制关闭」（实验，不保证成功）
+			var buildReasonRow = function(vm){
+				var rkey = vm.provider+"/"+vm.model;
+				var rinfo = reasonInfo[rkey] || null;
+				// 自 host 侧读取：offSupported 已是「真申报」后的结果（pi-ai 面值里的 off
+				// 只是省略参数=厂商默认，不算能关）。旧 host 没返回该字段时按 efforts 兜底。
+				var offOk = rinfo
+					? (typeof rinfo.offSupported === "boolean" ? rinfo.offSupported
+						: (Array.isArray(rinfo.efforts) && rinfo.efforts.some(function(e){
+							var id = typeof e === "string" ? e : (e && e.id) || "";
+							return id === "off";
+						})))
+					: true;
+				var cur = vm.reasoning || "";
+				var opts = offOk ? [["","默认"],["off","关闭"]] : [["","默认"],["forceOff","强制关闭"]];
+				var hint;
+				if(!rinfo){
+					hint = "读取能力…";
+				} else if(rinfo.efforts && rinfo.efforts.length > 0){
+					var effStr = rinfo.efforts.map(function(e){ return typeof e==="string" ? e : String((e && e.id) || ""); }).filter(Boolean).join(", ");
+					hint = "提供方档位："+effStr;
+				} else {
+					hint = "未申报档位";
+				}
+				if(hint !== "读取能力…" && !offOk) hint += " · 无「关闭」档，仅能尝试";
+				if(cur === "forceOff") hint += " · 不保证成功";
+				return createElement("div",{className:"vmo-settings-reason-row"},
+					createElement("span",{className:"vmo-settings-reason-label"},"推理"),
+					createElement("div",{className:"vmo-effort-seg", role:"radiogroup", "aria-label":"推理策略"},
+						opts.map(function(o){
+							var sel = cur === o[0];
+							return createElement("button",{key:o[0], type:"button", role:"radio", "aria-checked":sel, disabled: busy, className:"vmo-effort-seg-btn"+(sel?" is-on":""), onClick:(function(v,val){ return function(){ updateReasoning(v, val); }; })(vm, o[0])}, o[1]);
+						})
+					),
+					createElement("div",{className:"vmo-settings-reason-hint"}, hint)
+				);
+			};
+			// 一次性为所有未读取能力的模型调度请求。
+			// effect 只依赖 [models, loading, err] —— 绝不依赖它自己写入的
+			// reasonInfo/reasonLoading，否则 setState → 渲染 → effect 重触发 → 死循环。
+			// 去重交给 reasonSeen（ref 同步锁），因此这里也无需 setTimeout。
+			useEffect(function(){
+				if(loading || err) return;
+				if(!Array.isArray(models) || models.length===0) return;
+				for(var i=0;i<models.length;i++){
+					var vm = models[i];
+					if(!vm) continue;
+					ensureReasonInfo(vm);
+				}
+			}, [models, loading, err]);
+
+			var header = createElement("div",{className:"vmo-settings-head", style:{marginBottom:"0"} },
+				createElement("h3",{className:"vmo-settings-title"},"Vision 模型"),
+				createElement("span",{style:{marginLeft:"8px",fontSize:"12px",color:"var(--dsw-alias-label-tertiary)"}}, "插件自管 · 与上方提供方独立")
 			);
 			var intro = createElement("p",{className:C.intro}, "填入各提供方的 API 密钥即可使用其模型。");
 
@@ -1003,18 +1178,19 @@ window.__ModuleLoader__.load({
 								createElement("span",{style:{marginRight:"12px"}}, vm.provider+"/"+vm.model),
 								vm.description ? createElement("span",null, vm.description) : null,
 								isSelected(vm) ? createElement("span",{style:{marginLeft:"8px",color:"var(--dsw-alias-state-success-primary)"}}, "· 当前选中") : null
-							)
-							));
-						}
-						var _open = isExpanded(gProvider);
-						groupSections.push(createElement("section",{key:gProvider, className:"vmo-provider-group" + (_open ? " vmo-provider-groupOpen":""), style:{display:"flex",flexDirection:"column",gap:"8px"}},
-							createElement("button",{type:"button", className:"vmo-provider-head", "aria-expanded": _open, onClick:(function(p){ return function(){ toggleExpand(p); }; })(gProvider)},
-								createElement("span",{className:"vmo-provider-chevron"}, IconChevronDownOutline14 ? createElement(IconChevronDownOutline14,{size:12}) : "›"),
-								createElement("span",{className:"vmo-provider-name"}, gProvider),
-								createElement("span",{className:"vmo-provider-count"}, gModels.length + " 个模型")
 							),
-							_open ? createElement("ul",{className:C.rows, style:{marginTop:"0"}}, gItems) : null
-						));
+						buildReasonRow(vm)
+					));
+				}
+				var _open = isExpanded(gProvider);
+				groupSections.push(createElement("section",{key:gProvider, className:"vmo-provider-group" + (_open ? " vmo-provider-groupOpen":""), style:{display:"flex",flexDirection:"column",gap:"8px"}},
+					createElement("button",{type:"button", className:"vmo-provider-head", "aria-expanded": _open, onClick:(function(p){ return function(){ toggleExpand(p); }; })(gProvider)},
+						createElement("span",{className:"vmo-provider-chevron"}, IconChevronDownOutline14 ? createElement(IconChevronDownOutline14,{size:12}) : "›"),
+						createElement("span",{className:"vmo-provider-name"}, gProvider),
+						createElement("span",{className:"vmo-provider-count"}, gModels.length + " 个模型")
+					),
+					_open ? createElement("ul",{className:C.rows, style:{marginTop:"0"}}, gItems) : null
+				));
 					}
 					rowsEl = createElement("div",{style:{display:"flex",flexDirection:"column",gap:"16px"}}, groupSections);
 				}
@@ -1347,7 +1523,7 @@ window.__ModuleLoader__.load({
 				}
 			}
 
-			var toastEl = toast2 ? createElement("div",{style:{position:"fixed",left:"50%",top:"16px",transform:"translateX(-50%)",background:"var(--dsw-alias-bg-primary,#333)",color:"var(--dsw-alias-label-primary)",border:"1px solid var(--dsw-alias-border-l2)",padding:"8px 12px",borderRadius:"8px",fontSize:"13px",zIndex:10000,boxShadow:"var(--dsw-shadow-lv3)"}}, toast2) : null;
+			var toastEl = toast2 ? createElement("div",{style:{position:"fixed",left:"50%",top:"16px",transform:"translateX(-50%)",background:"var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-primary,#333))",color:"var(--dsw-alias-label-primary)",border:"1px solid var(--dsw-alias-border-l2)",padding:"8px 12px",borderRadius:"8px",fontSize:"13px",zIndex:10000,boxShadow:"var(--dsw-shadow-lv3)"}}, toast2) : null;
 
 			var sectionChildren = [header, intro];
 			if (systemHint !== null) sectionChildren.push(systemHint);
