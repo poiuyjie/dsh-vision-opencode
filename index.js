@@ -556,10 +556,26 @@ export function apply(ctx, entry) {
       } catch { raw = null; }
     }
     if (raw && typeof raw === 'object') {
-      const items = Array.isArray(raw) ? raw : Object.values(raw);
+      // pi-ai 数据有两种形态：扁平 `{ id: entry }`/数组（module 导出），或按 api 分组
+      // `{ 'openai-completions': { id: entry, ... }, ... }`（dist/providers/data/*.json）。
+      // 必须逐层展开到「带字符串 id 的模型条目」——直接把分组对象当条目会使 byId 为空，
+      // 真 off 判别静默失效（每个模型都回退为 offSupported=true，赝品 off 全部复活）。
+      const items = [];
+      const pushEntry = (entry) => {
+        if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string') return;
+        items.push(entry);
+      };
+      const top = Array.isArray(raw) ? raw : Object.values(raw);
+      for (const layer of top) {
+        if (!layer || typeof layer !== 'object') continue;
+        if (typeof layer.id === 'string') { pushEntry(layer); continue; }
+        for (const entry of Object.values(layer)) pushEntry(entry);
+      }
+      if (items.length === 0) {
+        ctx.logger?.warn?.(`vision-opencode: 未能从 ${provider} 目录解析出任何模型条目（形态未知），真 off 判别回退` );
+      }
       byId = {};
       for (const entry of items) {
-        if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string') continue;
         byId[entry.id] = {
           reasoning: entry.reasoning === true || entry.reasoning === false ? entry.reasoning : undefined,
           tlm: entry.thinkingLevelMap && typeof entry.thinkingLevelMap === 'object' ? entry.thinkingLevelMap : undefined,
