@@ -70,8 +70,8 @@ const Config = z.object({
   visionModels: z.array(VisionModelEntry).default([]),
   /** llm/stream 瀑布开关：false 时停用「发图自动转换」，只保留工具与选择器（稳定性逃生阀）。 */
   autoConvert: z.boolean().default(true),
-  /** 识图模型推理档位：空=提供方默认；off 关闭思考；minimal/low/medium/high/xhigh/max 递增。 */
-  reasoningEffort: z.string().default(''),
+  /** 识图推理开关：false/缺省=关闭思考（默认）；true=开启（走提供方默认档位）。 */
+  visionReasoning: z.boolean().default(false),
   /** 旧版/手动兼容路由；当前版本通常由适配器能力自动识别。 */
   mainProvider: z.string().default(''),
   /** 旧版/手动兼容模型列表；无需随当前主模型切换同步。 */
@@ -142,7 +142,7 @@ export function apply(ctx, entry) {
           }))
         : [],
       autoConvert: raw?.autoConvert !== false,
-      reasoningEffort: typeof raw?.reasoningEffort === 'string' ? raw.reasoningEffort.trim() : '',
+      visionReasoning: raw?.visionReasoning === true,
       mainProvider: typeof raw?.mainProvider === 'string' ? raw.mainProvider.trim() : '',
       mainModels: Array.isArray(raw?.mainModels)
         ? raw.mainModels.filter((id) => typeof id === 'string' && id.length > 0)
@@ -499,6 +499,29 @@ export function apply(ctx, entry) {
     }
   }
 
+  /** 推理关闭时向适配器传它的"off"档位（pi-ai 为 'off'），并尊重模型能力：
+   *  模型明确声明了推理档位但不含 'off' 的（各家常叫 none/false/omit 不一），
+   *  就不传 reasoningEffort，退化为提供方默认而非报错。按路由缓存。 */
+  let visionEffortCache = null;
+  async function visionReasoningParam(route) {
+    // 开启（或缺省之外的显式 true）：不传 → 走提供方默认档位
+    if (route.visionReasoning === true) return void 0;
+    const key = route.provider + '\0' + route.model;
+    if (visionEffortCache !== null && visionEffortCache.key === key) return visionEffortCache.param;
+    let param = 'off';
+    try {
+      const info = await ctx.llm.resolveModelInfo(route.provider, route.model);
+      const efforts = info?.reasoning?.efforts;
+      if (Array.isArray(efforts) && efforts.length > 0 && !efforts.includes('off')) {
+        param = ''; // 有能力但关闭名不是 'off'：不确定命名则省略，保证请求不报错
+      }
+    } catch {
+      /* 元数据不可用时按 pi-ai 惯例用 'off' */
+    }
+    visionEffortCache = { key, param };
+    return param === '' ? void 0 : param;
+  }
+
   /** 单次识图子调用：组装带图消息 → 流式请求识图模型 → 返回纯文本。 */
   async function callVisionOnce(ref, signal, question) {
     const route = options();
@@ -515,14 +538,14 @@ export function apply(ctx, entry) {
       source: { kind: 'plugin', plugin: 'vision-opencode' },
     });
     const assembler = new BlockAssembler();
-    const effort = route.reasoningEffort?.trim();
+    const reasoningEffort = await visionReasoningParam(route);
     for await (const chunk of ctx.llm.stream({
       provider: route.provider,
       model: route.model,
       system: VISION_SYSTEM_PROMPT,
       messages: [message],
       temperature: 0.2,
-      ...(effort && effort.length > 0 ? { reasoningEffort: effort } : {}),
+      ...(reasoningEffort !== void 0 ? { reasoningEffort } : {}),
       signal,
       [BYPASS]: true,
     })) {
@@ -990,13 +1013,8 @@ export function apply(ctx, entry) {
               json(res, 400, { error: 'provider and model strings are required' });
               return;
             }
-            // 识图模型推理档位：空=提供方默认；pi-ai 档位 off/minimal/low/medium/high/xhigh/max
-            const reasoningEffort = typeof body?.reasoningEffort === 'string' ? body.reasoningEffort.trim() : '';
-            const validEfforts = ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
-            if (!validEfforts.includes(reasoningEffort)) {
-              json(res, 400, { error: `invalid reasoningEffort "${reasoningEffort}"` });
-              return;
-            }
+            // 识图推理开关：true=开启（提供方默认档位）；false/缺省=关闭思考
+            const visionReasoning = body?.visionReasoning === true;
             // 精确排除本插件管理的文本主路由，并校验候选模型确实声明了 image 输入。
             // 允许插件自管 visionModels 中的自定义模型（即使宿主 catalog 未标记 image）。
             let declaredVision = false;
@@ -1012,10 +1030,10 @@ export function apply(ctx, entry) {
               return;
             }
             if (settingsScope !== void 0) {
-              // 更新识图模型（及可选推理档位），保留其余配置（autoConvert/mainProvider/mainModels）。
-              await settingsScope.replace({ ...options(), provider, model, reasoningEffort });
+              // 更新识图模型（及可选推理开关），保留其余配置（autoConvert/mainProvider/mainModels）。
+              await settingsScope.replace({ ...options(), provider, model, visionReasoning });
             } else {
-              const next = { ...options(), provider, model, reasoningEffort };
+              const next = { ...options(), provider, model, visionReasoning };
               current = () => next;
             }
             json(res, 200, publicOptions());

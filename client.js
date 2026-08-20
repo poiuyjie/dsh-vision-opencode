@@ -86,9 +86,22 @@ window.__ModuleLoader__.load({
 				/* 菜单卡片：表面令牌与官方 Menu 原语一致；滚动条重绑 l2 高度令牌 */
 				".vmo-menu{position:absolute;right:0;bottom:calc(100% + 8px);z-index:20;display:flex;flex-direction:column;width:min(240px,calc(100vw - 32px));max-height:min(360px,calc(100vh - 96px));overflow:hidden;padding:4px;border:1px solid var(--dsw-alias-border-inverted);border-radius:12px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2)}",
 				".vmo-status,.vmo-empty{padding:10px;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}",
-			".vmo-effort{display:flex;align-items:center;gap:8px;padding:8px 10px;border-top:1px solid var(--dsw-alias-border-l2)}",
+			".vmo-effort{display:flex;align-items:center;gap:8px;padding:6px 10px 8px;border-top:1px solid var(--dsw-alias-border-l2)}",
 			".vmo-effort-label{font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary);flex:none}",
-			".vmo-effort-select{flex:1;min-width:0;padding:4px 6px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2,transparent);border:1px solid var(--dsw-alias-border-l2);border-radius:6px}",
+			".vmo-effort-wrap{position:relative;min-width:0}",
+			".vmo-effort-trigger{display:flex;align-items:center;gap:4px;min-width:0;height:28px;padding:0 4px 0 8px;border:none;border-radius:24px;outline:none;background:transparent;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;font-weight:500;cursor:pointer}",
+			".vmo-effort-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}",
+			".vmo-effort-trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-border-l3)}",
+			".vmo-effort-trigger:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}",
+			".vmo-effort-tag{flex:0 0 auto;color:var(--dsw-alias-label-caption)}",
+			".vmo-effort-val{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+			".vmo-effort-menu{position:absolute;right:0;bottom:calc(100% + 6px);z-index:30;display:flex;flex-direction:column;min-width:140px;padding:4px;border:1px solid var(--dsw-alias-border-inverted);border-radius:12px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-shadow-lv3)}",
+			".vmo-effort-option{display:flex;flex-direction:column;gap:0;width:100%;min-height:38px;padding:5px 8px;border:none;border-radius:10px;outline:none;background:transparent;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer}",
+			".vmo-effort-option:hover:not(:disabled):not(.is-on),.vmo-effort-option:focus-visible{background:var(--dsw-alias-interactive-bg-hover)}",
+			".vmo-effort-option:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}",
+			".vmo-effort-option.is-on{background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-state-business-primary)}",
+			".vmo-effort-opt-label{font-size:13px;line-height:20px;font-weight:500}",
+			".vmo-effort-hint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}",
 				/* 加载失败条（官方 error 表面）+ 重试入口 */
 				".vmo-error{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:4px;padding:7px 8px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}",
 				".vmo-retry{flex:0 0 auto;padding:0;border:none;background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}",
@@ -182,6 +195,9 @@ window.__ModuleLoader__.load({
 			var openState = useState(false);
 			var open = openState[0];
 			var setOpen = openState[1];
+			var effortOpenState = useState(false);
+			var effortOpen = effortOpenState[0];
+			var setEffortOpen = effortOpenState[1];
 			var toastState = useState(null);
 			var toast = toastState[0];
 			var setToast = toastState[1];
@@ -190,6 +206,7 @@ window.__ModuleLoader__.load({
 			var setProgress = progressState[1];
 			var rootRef = useRef(null);
 			var triggerRef = useRef(null);
+			var effortTriggerRef = useRef(null);
 			var itemRefs = useRef([]);
 			var toastSeq = useRef(0);
 			var loadRef = useRef(null);
@@ -305,16 +322,19 @@ window.__ModuleLoader__.load({
 
 			// 打开期间：点击外部关闭（官方 ModelSelect 同款 mousedown 判定）
 			useEffect(function() {
-				if (!open) return;
+				if (!open && !effortOpen) return;
 				var onPointerDown = function(event) {
 					var node = rootRef.current;
-					if (node !== null && !node.contains(event.target)) setOpen(false);
+					if (node !== null && !node.contains(event.target)) {
+						setOpen(false);
+						setEffortOpen(false);
+					}
 				};
 				document.addEventListener("mousedown", onPointerDown);
 				return function() {
 					document.removeEventListener("mousedown", onPointerDown);
 				};
-			}, [open]);
+			}, [open, effortOpen]);
 
 			var close = function(restoreFocus) {
 				setOpen(false);
@@ -342,9 +362,10 @@ window.__ModuleLoader__.load({
 				if (items[next] !== undefined) items[next].focus();
 			};
 			var onRootKeyDown = function(event) {
-				if (event.key === "Escape" && open) {
+				if (event.key === "Escape" && (open || effortOpen)) {
 					event.preventDefault();
-					close(true);
+					if (open) close(true);
+					if (effortOpen) setEffortOpen(false);
 					return;
 				}
 				if (!open) return;
@@ -401,25 +422,16 @@ window.__ModuleLoader__.load({
 					});
 			};
 
-			// 识图模型推理档位：空=提供方默认；off 关闭思考；minimal/low/medium/high/xhigh/max 递增。
-			// 与 pi-ai 适配器的档位词汇一致；具体模型若不支持所选档位，请求会在调用时报错提示。
-			var EFFORT_OPTIONS = [
-				{ value: "", label: "默认（跟随模型）" },
-				{ value: "off", label: "off — 关闭思考" },
-				{ value: "minimal", label: "minimal" },
-				{ value: "low", label: "low" },
-				{ value: "medium", label: "medium" },
-				{ value: "high", label: "high" },
-				{ value: "xhigh", label: "xhigh" },
-				{ value: "max", label: "max" },
-			];
-			var setEffort = function(value) {
+			// 识图推理开关：true=开启（提供方默认档位）；false/缺省=关闭思考。
+			// 关闭时后端按适配器实际支持的档位名转译（pi-ai 为 off），无需在此纠结各家命名。
+			var reasoningOn = current !== null && typeof current === "object" && current.visionReasoning === true;
+			var setEffort = function(on) {
 				if (current === null || typeof current.provider !== "string" || typeof current.model !== "string") return;
 				setBusy(true);
 				fetch("/vision-opencode/config", {
 					method: "PUT",
 					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ provider: current.provider, model: current.model, reasoningEffort: value })
+					body: JSON.stringify({ provider: current.provider, model: current.model, visionReasoning: on })
 				})
 					.then(function(resp) {
 						if (!resp.ok) throw new Error("HTTP " + resp.status);
@@ -427,6 +439,7 @@ window.__ModuleLoader__.load({
 					})
 					.then(function(cfg) {
 						setBusy(false);
+						setEffortOpen(false);
 						if (cfg !== null && typeof cfg === "object") setCurrent(cfg);
 					})
 					.catch(function(error) {
@@ -551,18 +564,46 @@ window.__ModuleLoader__.load({
 				menuChildren.push(createElement("div", { className: "vmo-groups", key: "groups" }, sectionNodes));
 			}
 
-			// 底部：识图模型推理档位（空=提供方默认；off=关闭思考）
+			// 底部：识图推理开关（开启=提供方默认档位；关闭=禁用思考），
+			// 触发器样式与模型选择器同族（胶囊 + caption 前缀 + 箭头），深浅色跟随 shell 令牌
 			menuChildren.push(createElement("div", { key: "effort", className: "vmo-effort" },
 				createElement("span", { className: "vmo-effort-label" }, "推理"),
-				createElement("select", {
-					className: "vmo-effort-select",
-					"aria-label": "识图模型推理档位",
-					value: (current !== null && typeof current === "object" && typeof current.reasoningEffort === "string") ? current.reasoningEffort : "",
-					disabled: busy,
-					onChange: function(ev) { setEffort(ev.target.value); }
-				}, EFFORT_OPTIONS.map(function(o) {
-					return createElement("option", { key: o.value, value: o.value }, o.label);
-				}))))
+				createElement("div", { className: "vmo-effort-wrap" },
+					createElement("button", {
+						type: "button",
+						ref: effortTriggerRef,
+						className: "vmo-effort-trigger",
+						"aria-haspopup": "menu",
+						"aria-expanded": effortOpen,
+						disabled: busy,
+						title: reasoningOn ? "识图模型推理：开启（提供方默认档位）" : "识图模型推理：关闭",
+						onClick: function() { setEffortOpen(!effortOpen); }
+					},
+						createElement("span", { className: "vmo-effort-tag" }, "思考"),
+						createElement("span", { className: "vmo-effort-val" }, reasoningOn ? "开启" : "关闭"),
+						createElement("span", { className: "vmo-chevron" + (effortOpen ? " vmo-chevron-open" : "") },
+							IconChevronDownOutline14 ? createElement(IconChevronDownOutline14, { size: 14 }) : "▾")),
+					effortOpen ? createElement("div", { className: "vmo-effort-menu", role: "menu", "aria-label": "识图模型推理开关" },
+						createElement("button", {
+							type: "button",
+							role: "menuitemradio",
+							"aria-checked": reasoningOn,
+							className: "vmo-effort-option" + (reasoningOn ? " is-on" : ""),
+							onClick: function() { setEffort(true); }
+						},
+							createElement("span", { className: "vmo-effort-opt-label" }, "开启"),
+							createElement("span", { className: "vmo-effort-hint" }, "提供方默认档位")),
+						createElement("button", {
+							type: "button",
+							role: "menuitemradio",
+							"aria-checked": !reasoningOn,
+							className: "vmo-effort-option" + (!reasoningOn ? " is-on" : ""),
+							onClick: function() { setEffort(false); }
+						},
+							createElement("span", { className: "vmo-effort-opt-label" }, "关闭"),
+							createElement("span", { className: "vmo-effort-hint" }, "更快 · 更省 token")))
+					: null)
+			))
 
 			// 识图进度文案：占位替换触发器的 "Vision" 标记（模型名保留）；
 			// 运行中官方 TurnStatus 同款微光扫过（deepseek-500 文字 + deepseek-200 光带），
