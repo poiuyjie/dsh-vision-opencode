@@ -73,7 +73,7 @@ const VisionModelEntry = z.object({
   name: z.string().default(''),
   description: z.string().default(''),
   baseUrl: z.string().default(''),
-  requestFormat: z.union([z.const('openai'), z.const('anthropic')]).default('openai'),
+  requestFormat: z.union([z.const('openai'), z.const('openai-completions'), z.const('openai-responses'), z.const('anthropic')]).default('openai-completions'),
 });
 
 /** 识图模型配置 schema（settings 面板自动生成表单）。 */
@@ -90,6 +90,8 @@ const Config = z.object({
   mainModels: z.array(z.string()).default([]),
   /** 旧版本修改 modelOverrides 前保存的 input；仅用于升级/卸载时精确恢复。 */
   gateState: z.string().default('').hidden(),
+  /** 设置页「检测到未导入的系统模型」里被用户 × 掉的模型（"provider/model" 数组），持久化避免每次重开又提示。 */
+  ignoredModels: z.array(z.string()).default([]),
 });
 
 const VISION_SYSTEM_PROMPT = [
@@ -150,7 +152,7 @@ export function apply(ctx, entry) {
             name: typeof e.name === 'string' ? e.name.trim() : '',
             description: typeof e.description === 'string' ? e.description.trim() : '',
             baseUrl: typeof e.baseUrl === 'string' ? e.baseUrl.trim() : '',
-            requestFormat: e.requestFormat === 'anthropic' ? 'anthropic' : 'openai',
+            requestFormat: e.requestFormat === 'anthropic' ? 'anthropic' : (e.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions'),
           }))
         : [],
       autoConvert: raw?.autoConvert !== false,
@@ -159,6 +161,9 @@ export function apply(ctx, entry) {
         ? raw.mainModels.filter((id) => typeof id === 'string' && id.length > 0)
         : [],
       gateState: typeof raw?.gateState === 'string' ? raw.gateState : '',
+      ignoredModels: Array.isArray(raw?.ignoredModels)
+        ? raw.ignoredModels.filter((s) => typeof s === 'string' && s.length > 0)
+        : [],
     };
     lastRaw = raw;
     lastGood = next;
@@ -993,6 +998,18 @@ export function apply(ctx, entry) {
           }
           if (req.method === 'PUT') {
             const body = await readJsonBody(req);
+            // 忽略列表持久化：设置页把未导入系统模型「×」掉后写入，下次打开不再提示。
+            if (Array.isArray(body?.ignoredModels)) {
+              const clean = body.ignoredModels.filter((s) => typeof s === 'string');
+              if (settingsScope !== void 0) {
+                await settingsScope.replace({ ...options(), ignoredModels: clean });
+              } else {
+                const next = { ...options(), ignoredModels: clean };
+                current = () => next;
+              }
+              json(res, 200, publicOptions());
+              return;
+            }
             const provider = typeof body?.provider === 'string' ? body.provider.trim() : '';
             const model = typeof body?.model === 'string' ? body.model.trim() : '';
             if (provider.length === 0 || model.length === 0) {
@@ -1041,7 +1058,26 @@ export function apply(ctx, entry) {
             res.end();
             return;
           }
+          // 已导入识图模型（聊天框选择器只用这份：未导入的模型不应出现在选择器里）。
+          const configured = options().visionModels || [];
           const groups = [];
+          const byProvider = {};
+          for (const entry of configured) {
+            if (!entry || typeof entry.provider !== 'string' || typeof entry.model !== 'string' || entry.model.length === 0) continue;
+            if (!byProvider[entry.provider]) byProvider[entry.provider] = [];
+            byProvider[entry.provider].push({ id: entry.model, name: typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : entry.model });
+          }
+          const nameOf = {};
+          try {
+            for (const provider of ctx.llm.listProviders()) nameOf[provider.id] = provider.name || provider.id;
+          } catch (error) {
+            /* 显示名缺失时退回 provider id */
+          }
+          for (const providerId of Object.keys(byProvider).sort()) {
+            groups.push({ provider: providerId, name: nameOf[providerId] || providerId, models: byProvider[providerId] });
+          }
+          // 系统全部图片模型（设置页「一键导入」用）。
+          const systemGroups = [];
           for (const provider of ctx.llm.listProviders()) {
             try {
               const models = await ctx.llm.listModels(provider.id);
@@ -1049,7 +1085,7 @@ export function apply(ctx, entry) {
                 Array.isArray(model.inputModalities)
                 && model.inputModalities.includes('image'));
               if (vision.length === 0) continue;
-              groups.push({
+              systemGroups.push({
                 provider: provider.id,
                 name: provider.name,
                 models: vision.map((model) => ({ id: model.id, name: model.name })),
@@ -1058,7 +1094,7 @@ export function apply(ctx, entry) {
               ctx.logger.warn(`vision-opencode: listModels(${provider.id}) failed`, error);
             }
           }
-          json(res, 200, { groups });
+          json(res, 200, { groups, systemGroups });
         } catch (error) {
           ctx.logger.error('vision-opencode: /vision-opencode/models failed', error);
           json(res, 500, { error: error?.message ?? String(error) });
@@ -1146,7 +1182,7 @@ export function apply(ctx, entry) {
             const name = typeof body?.name === 'string' ? body.name.trim() : '';
             const description = typeof body?.description === 'string' ? body.description.trim() : '';
             const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
-            const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : 'openai';
+            const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : (body?.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions');
             let id = typeof body?.id === 'string' ? body.id.trim() : '';
             if (provider.length === 0 || model.length === 0) {
               json(res, 400, { error: 'provider and model are required' });
@@ -1181,7 +1217,7 @@ export function apply(ctx, entry) {
             const name = typeof body?.name === 'string' ? body.name.trim() : '';
             const description = typeof body?.description === 'string' ? body.description.trim() : '';
             const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
-            const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : 'openai';
+            const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : (body?.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions');
             if (id.length === 0 || provider.length === 0 || model.length === 0) {
               json(res, 400, { error: 'id, provider and model are required' });
               return;

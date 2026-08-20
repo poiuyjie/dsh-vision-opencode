@@ -673,8 +673,6 @@ window.__ModuleLoader__.load({
 					if(!c || typeof c.id!=="string" || known.indexOf(c.id)>=0) continue;
 					var entry = { id: c.id };
 					if(typeof c.name==="string" && c.name.length>0) entry.name = c.name;
-					if(typeof c.contextWindow==="number") entry.contextWindow = c.contextWindow;
-					if(typeof c.maxTokens==="number") entry.maxTokens = c.maxTokens;
 					fresh.push(entry);
 				}
 				if(typeof onCandidates==="function") onCandidates(fresh);
@@ -741,7 +739,7 @@ window.__ModuleLoader__.load({
 				Promise.all([
 					fetch("/vision-opencode/vision-models",{headers:{accept:"application/json"}}).then(function(r){return r.json();}),
 					fetch("/vision-opencode/config",{headers:{accept:"application/json"}}).then(function(r){return r.json();}).catch(function(){return null;}),
-					fetch("/vision-opencode/models",{headers:{accept:"application/json"}}).then(function(r){return r.json();}).catch(function(){return {groups:[]};}),
+					fetch("/vision-opencode/models",{headers:{accept:"application/json"}}).then(function(r){return r.json();}).catch(function(){return {systemGroups:[]};}),
 					fetch("/vision-opencode/providers",{headers:{accept:"application/json"}}).then(function(r){return r.json();}).catch(function(){return {providers:[]};})
 				]).then(function(res){
 					var vm = res[0];
@@ -751,13 +749,19 @@ window.__ModuleLoader__.load({
 					if(vm && Array.isArray(vm.models)) setModels(vm.models);
 					else setModels([]);
 					if(cfg) setConfig(cfg);
+					// 恢复持久化的「忽略未导入系统模型」列表（× 掉的模型下次打开不再提示）
+					if(cfg && Array.isArray(cfg.ignoredModels)){
+						var dd = {};
+						for(var _di=0; _di<cfg.ignoredModels.length; _di++) dd[cfg.ignoredModels[_di]] = true;
+						setDismissed(dd);
+					}
 					if(prov && Array.isArray(prov.providers)) setProviders(prov.providers);
 					else setProviders([]);
 					if(prov && Array.isArray(prov.protocols) && prov.protocols.length>0) protocolList = prov.protocols.slice();
 					var flat = [];
-					if(sys && Array.isArray(sys.groups)){
-						for(var gi=0; gi<sys.groups.length; gi++){
-							var g=sys.groups[gi];
+					if(sys && Array.isArray(sys.systemGroups)){
+						for(var gi=0; gi<sys.systemGroups.length; gi++){
+							var g=sys.systemGroups[gi];
 							if(!g || typeof g.provider!=="string") continue;
 							var ms=Array.isArray(g.models)?g.models:[];
 							for(var mi=0; mi<ms.length; mi++){
@@ -1025,7 +1029,11 @@ window.__ModuleLoader__.load({
 							var isImp = importing===key;
 							return createElement("span",{key:key, style:{display:"inline-flex",gap:"4px",alignItems:"center"}},
 							createElement("button",{type:"button", className:C.linkButton, disabled:busy, onClick:(function(entry){ return function(){ importOne(entry); }; })(e)}, isImp?"导入中…": key),
-							createElement("button",{type:"button", className:C.linkButton, disabled:busy, onClick:(function(k){ return function(){ var d={}; for(var kk in dismissed) d[kk]=dismissed[kk]; d[k]=true; setDismissed(d); }; })(key)}, "×")
+							createElement("button",{type:"button", className:C.linkButton, disabled:busy, onClick:(function(k){ return function(){
+								var d={}; for(var kk in dismissed) d[kk]=dismissed[kk]; d[k]=true; setDismissed(d);
+								// 持久化忽略列表：下次打开设置页不再提示该模型未导入
+								fetch("/vision-opencode/config",{method:"PUT", headers:{"content-type":"application/json"}, body: JSON.stringify({ ignoredModels: Object.keys(d).filter(function(_x){ return d[_x]; }) })}).catch(function(){});
+							}; })(key)}, "×")
 						);
 						})
 					),
@@ -1045,11 +1053,32 @@ window.__ModuleLoader__.load({
 					nd[key]=val;
 					setModal({mode: modal.mode, data: nd});
 				};
+				// 模型目录（modal.models 顶层数组）专用更新：渲染读取的是顶层 modal.models，
+				// 不能用 updateField（那只写 modal.data.models，列表不会刷新）。
+				var setModelsField = function(list){
+					var nd = {};
+					for(var k in modal.data) nd[k]=modal.data[k];
+					setModal({mode: modal.mode, data: nd, models: list});
+				};
 				var selProvider = isCustomMode ? "" : (modal.data.provider||"");
 				var isBuiltinProvider = false;
 				for(var _pi4=0; _pi4<providers.length; _pi4++){ if(providers[_pi4] && providers[_pi4].provider===selProvider && providers[_pi4].source==="builtin"){ isBuiltinProvider = true; break; } }
 				// 官方卡片式表单（复用 zGbnIq_* 样式）
 				var editorChildren = [];
+				// 卡片标题（模态标题）：添加提供方 / 编辑 Vision 模型 / 自定义提供方
+				editorChildren.unshift(createElement("div",{className:C.editorHeader},
+					createElement("span",{className:C.editorTitle}, modalTitle)
+				));
+				// API 密钥（复用官方 credentials 域）。
+				// 位置按模式区分：官方内置供应商跟在提供方 select 之后（主体），
+				// 自定义提供方放在 API 协议下方（见 isCustomMode 分支）。
+				// placeholder 按模式区分：custom 不支持环境认证，只提示输入密钥。
+				var makeKeyField = function(placeholder){
+					return createElement("div",{className:C.field},
+						createElement("span",{className:C.fieldLabel},"API 密钥"),
+						createElement("input",{className:C.input, type:"password", autoComplete:"off", value: modal.keyDraft||"", placeholder: placeholder||"输入 API 密钥，或留空使用环境认证", "aria-label":"API 密钥", onChange:function(e){ updateField("keyDraft", e.target.value); }})
+					);
+				};
 				if(!isCustomMode){
 					editorChildren.push(createElement("div",{className:C.field},
 						createElement("span",{className:C.fieldLabel},"提供方"),
@@ -1070,13 +1099,69 @@ window.__ModuleLoader__.load({
 							})()
 						)
 					));
+					editorChildren.push(makeKeyField());
 				}
-				// API 密钥（复用官方 credentials 域）
-				editorChildren.push(createElement("div",{className:C.field},
-					createElement("span",{className:C.fieldLabel},"API 密钥"),
-					createElement("input",{className:C.input, type:"password", autoComplete:"off", value: modal.keyDraft||"", placeholder:"输入 API 密钥，或留空使用环境认证", "aria-label":"API 密钥", onChange:function(e){ updateField("keyDraft", e.target.value); }})
-				));
+				// （API 密钥字段由 makeKeyField 生成，按模式分别 push：见两个分支）
 				// 自定义提供方：Provider ID / 显示名 / API 地址 / API 协议
+				// 模型目录：标题行（左）+ 获取可用模型（右）+ 列表 + 添加模型。
+				// 构建先于 provider 分支：自定义提供方直接展示在主体，
+				// 官方内置供应商收进「自定义设置」折叠区。
+				var modelRows = Array.isArray(modal.models) ? modal.models.slice() : (modal.data.model && modal.data.model.length>0 ? [{id: modal.data.model, name: modal.data.name||""}] : []);
+				var catalogChildren = [
+					createElement("div",{className:C.modelListHead},
+						createElement("div",{className:C.modelCatalogHeading},
+							createElement("span",{className:C.modelCatalogTitle},"模型目录"),
+							createElement("span",{className:C.modelCatalogMeta}, modelRows.length===0 ? "正在使用适配器默认模型" : (modelRows.length+" 个模型"))
+						),
+						// 新增自定义提供方：未填写 API 地址或 API 密钥时不可获取模型（不依赖环境认证）；
+						// 编辑已有自定义提供方时凭据已存在，不限制
+						createElement("button",{type:"button", className:C.linkButton, disabled:busy||!!picker||(modal.mode==="custom" && (!modal.data.baseUrl || !modal.keyDraft)), title:(modal.mode==="custom" && (!modal.data.baseUrl || !modal.keyDraft)) ? "请先填写 API 地址和 API 密钥" : undefined, onClick:function(){
+							if(typeof fetchModelsFromProvider!=="function"){ showToast("获取模型不可用"); return; }
+							setPicker({candidates:[], selected:new Set(), busy:true});
+							fetchModelsFromProvider(modal, function(fresh){
+								// 默认全选所有候选：与目标 picker 视觉一致（用户剔除不想要的比主动勾选更顺手）。
+								setPicker({candidates:fresh, selected:new Set(fresh.map(function(c){ return c.id; })), busy:false});
+							}, showToast, api);
+						}}, busy||!!picker ? "获取中…" : "获取可用模型")
+					)
+				];
+				// 模型行内编辑辅助：改/删 modal.models 第 idx 行
+				var updateRow = function(idx, key, val){
+					var list = Array.isArray(modal.models) ? modal.models.slice() : [];
+					if(idx>=0 && idx<list.length){
+						var nextRow = {};
+						for(var _rk in list[idx]) nextRow[_rk] = list[idx][_rk];
+						nextRow[key] = val;
+						list[idx] = nextRow;
+					}
+					setModelsField(list);
+				};
+				var removeRow = function(idx){
+					var list = Array.isArray(modal.models) ? modal.models.slice() : [];
+					list.splice(idx, 1);
+					setModelsField(list);
+				};
+				if(modelRows.length===0){
+					catalogChildren.push(createElement("div",{className:C.modelEmpty}, "尚未添加模型；点击下方「添加模型」新增一行并填写模型 ID。"));
+				} else {
+					catalogChildren.push(createElement("div",{className:C.modelList},
+						modelRows.map(function(mrow, mi){
+							return createElement("div",{key:(mrow.id||"new-")+mi, className:C.modelEntry},
+								createElement("div",{className:C.modelRow},
+									createElement("input",{className:C.input, type:"text", value: mrow.id||"", placeholder:"模型 ID", "aria-label":"模型 ID "+(mi+1), onChange:(function(i){ return function(e){ updateRow(i,"id",e.target.value); }; })(mi)}),
+									createElement("input",{className:C.input, type:"text", value: mrow.name||"", placeholder:"显示名称（可选）", "aria-label":"显示名称 "+(mi+1), onChange:(function(i){ return function(e){ updateRow(i,"name",e.target.value); }; })(mi)}),
+									createElement("button",{type:"button", className:C.iconButton+" "+C.iconButtonDanger, "aria-label":"删除模型 "+(mi+1), title:"删除", onClick:(function(i){ return function(){ removeRow(i); }; })(mi)}, IconTrashOutline16 ? createElement(IconTrashOutline16,{size:14}) : "×")
+								)
+							);
+						})
+					));
+				}
+				catalogChildren.push(createElement("button",{type:"button", className:C.addModelButton, disabled:busy, onClick:function(){
+					var list = Array.isArray(modal.models) ? modal.models.slice() : [];
+					list.push({ id:"", name:"" });
+					setModelsField(list);
+				}}, IconPlusOutline16 ? createElement(IconPlusOutline16,{size:14}) : null, " 添加模型"));
+				// 自定义提供方：Provider ID / 显示名 / API 地址 / API 协议 + 模型目录直接展示在主体
 				if(isCustomMode){
 					editorChildren.push(createElement("div",{className:C.field},
 						createElement("span",{className:C.fieldLabel},"Provider ID"),
@@ -1093,83 +1178,50 @@ window.__ModuleLoader__.load({
 					));
 					editorChildren.push(createElement("div",{className:C.field},
 						createElement("span",{className:C.fieldLabel},"API 协议"),
-						createElement("select",{className:C.input + " " + C.selectInput, value: modal.data.requestFormat||"", "aria-label":"API 协议", onChange:function(e){ updateField("requestFormat", e.target.value); }},
+						// openai 系包含 completions / responses 两种；value 直接存协议名（后端归一化存储），
+						// 旧配置里的 'openai' 归一化为 openai-completions 显示。
+						createElement("select",{className:C.input + " " + C.selectInput, value: (function(){ var f=modal.data.requestFormat; return f==="anthropic"?"anthropic":(f==="openai-responses"?"openai-responses":"openai-completions"); })(), "aria-label":"API 协议", onChange:function(e){ updateField("requestFormat", e.target.value); }},
 							(function(){
 								var opts=[];
-								var protos = Array.isArray(protocols) ? protocols : ["openai-completions","anthropic"];
+								var protos = ["openai-completions", "openai-responses", "anthropic"];
 								for(var _pi6=0; _pi6<protos.length; _pi6++){
 									var _pr=protos[_pi6];
 									if(typeof _pr!=="string"||_pr.length===0) continue;
 									opts.push(createElement("option",{value:_pr}, _pr));
 								}
-								if(opts.length===0) opts.push(createElement("option",{value:"openai-completions"},"openai-completions"));
 								return opts;
 							})()
 						)
 					));
+					editorChildren.push(makeKeyField("输入 API 密钥"));
+					editorChildren.push(createElement("div",{className:C.modelCatalog}, catalogChildren));
 					} else {
-						// 官方内置供应商：自定义设置（API 地址）折叠区（默认收起，key 强制重挂载）
+						// 官方内置供应商：API 地址、模型目录、获取可用模型、模型 ID
+						// 全部收进「自定义设置」折叠区（默认收起，key 强制重挂载）
 						editorChildren.push(createElement("details",{key:"customized-"+modal.mode, className:C.customized},
 							createElement("summary",{className:C.customizedSummary},"自定义设置"),
 							createElement("div",{className:C.customizedBody},
 								createElement("div",{className:C.field},
 									createElement("span",{className:C.fieldLabel},"API 地址"),
-									createElement("input",{className:C.input, type:"text", value: modal.data.baseUrl||"", placeholder:"提供方默认", "aria-label":"API 地址", onChange:function(e){ updateField("baseUrl", e.target.value); }})
-								)
+									createElement("input",{className:C.input, type:"text", value: modal.data.baseUrl||"", placeholder:"留空使用提供方默认", "aria-label":"API 地址", onChange:function(e){ updateField("baseUrl", e.target.value); }})
+								),
+								createElement("div",{className:C.modelCatalog}, catalogChildren)
 							)
 						));
 					}
-				// 模型目录：标题行（左）+ 获取可用模型（右）+ 列表 + 添加模型
-				var modelRows = Array.isArray(modal.models) ? modal.models.slice() : (modal.data.model && modal.data.model.length>0 ? [{id: modal.data.model, name: modal.data.name||""}] : []);
-				var catalogChildren = [
-					createElement("div",{className:C.modelListHead},
-						createElement("div",{className:C.modelCatalogHeading},
-							createElement("span",{className:C.modelCatalogTitle},"模型目录"),
-							createElement("span",{className:C.modelCatalogMeta}, modelRows.length===0 ? "正在使用适配器默认模型" : (modelRows.length+" 个模型"))
-						),
-						createElement("button",{type:"button", className:C.linkButton, disabled:busy||!!picker, onClick:function(){
-							if(typeof fetchModelsFromProvider!=="function"){ showToast("获取模型不可用"); return; }
-							setPicker({candidates:[], selected:new Set(), busy:true});
-							fetchModelsFromProvider(modal, function(fresh){
-								// 默认全选所有候选：与目标 picker 视觉一致（用户剔除不想要的比主动勾选更顺手）。
-								setPicker({candidates:fresh, selected:new Set(fresh.map(function(c){ return c.id; })), busy:false});
-							}, showToast, api);
-						}}, busy||!!picker ? "获取中…" : "获取可用模型")
-					)
-				];
-				if(modelRows.length===0){
-					catalogChildren.push(createElement("div",{className:C.modelEmpty}, "模型选择器中将不显示任何模型；目录外 ID 仍可直接发送。"));
-				} else {
-					catalogChildren.push(createElement("div",{className:C.modelList},
-						modelRows.map(function(mrow, mi){
-							return createElement("div",{key:mrow.id||mi, className:C.modelEntry},
-								createElement("div",{className:C.modelRow},
-									createElement("span",{className:C.rowName}, mrow.id),
-									createElement("span",{className:C.modelCatalogMeta}, mrow.name||""),
-									createElement("button",{type:"button", className:C.iconButton, "aria-label":"删除", onClick:(function(idx){ return function(){ var list = Array.isArray(modal.models) ? modal.models.slice() : []; list.splice(idx,1); updateField("models", list); }; })(mi)}, "×")
-								)
-							);
-						})
-					));
-				}
-				catalogChildren.push(createElement("div",{style:{display:"flex",gap:"8px",alignItems:"center",marginTop:"4px"}},
-					createElement("input",{className:C.input, type:"text", placeholder:"模型 ID", value: modal.data.model||"", style:{maxWidth:"260px"}, onChange:function(e){ updateField("model", e.target.value); }}),
-					createElement("button",{type:"button", className:C.addModelButton, disabled:busy, onClick:function(){
-						var mid = (modal.data.model||"").trim();
-						if(mid.length===0){ showToast("请先填写模型 ID"); return; }
-						var list = Array.isArray(modal.models) ? modal.models.slice() : [];
-						list.push({ id: mid, name: (modal.data.name||"").trim() });
-						updateField("models", list);
-						updateField("model", "");
-						updateField("name", "");
-					}}, "添加模型")
-				));
-				editorChildren.push(createElement("div",{className:C.modelCatalog}, catalogChildren));
 
 				var content = createElement("div",{className:C.editor}, editorChildren);
+				// 必要字段校验（与 submitAddOrEdit 的提交校验一致）：
+				// - 至少一个「模型 ID」非空的模型行；
+				// - 新增自定义提供方额外要求 Provider ID、API 地址、API 密钥非空
+				//   （编辑已有自定义提供方时凭据已存在，不要求重填密钥）。
+				var hasValidModel = (Array.isArray(modal.models) ? modal.models : []).some(function(_mm){ return _mm && typeof _mm.id==="string" && _mm.id.trim().length>0; });
+				var canSubmit = hasValidModel && (modal.mode==="custom"
+					? (modal.data.customProvider||"").trim().length>0 && (modal.data.baseUrl||"").trim().length>0 && (modal.keyDraft||"").trim().length>0
+					: true);
 				var footer = createElement("div",{className:C.editorActions},
 					createElement("button",{type:"button", className:C.secondaryButton, onClick:function(){ setPicker(null); setModal(null); }}, "取消"),
-					createElement("button",{type:"button", className:C.primaryButton, disabled:busy, onClick:submitAddOrEdit}, busy ? "保存中…" : (isCustomMode ? "创建提供方" : (isEdit?"保存":"添加")))
+					createElement("button",{type:"button", className:C.primaryButton, disabled:busy||!canSubmit, title:!canSubmit ? (modal.mode==="custom" ? "请先填写 Provider ID、API 地址、API 密钥，并至少填写一个模型 ID" : "请至少填写一个模型 ID") : undefined, onClick:submitAddOrEdit}, busy ? "保存中…" : (isCustomMode ? "创建提供方" : "保存"))
 				);
 				editorContent = content;
 			}
@@ -1239,7 +1291,7 @@ window.__ModuleLoader__.load({
 						existingIds[selectedModels[si].id] = true;
 						added++;
 					}
-					updateField("models", list);
+					setModelsField(list);
 					setPicker(null);
 					showToast("已添加 "+added+" 个模型");
 				};
