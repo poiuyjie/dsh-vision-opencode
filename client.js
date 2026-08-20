@@ -1270,7 +1270,9 @@ window.__ModuleLoader__.load({
 						createElement("button",{type:"button", className:"vmo-provider-head", "aria-expanded": _open, onClick:(function(p){ return function(){ toggleExpand(p); }; })(gProvider)},
 							createElement("span",{className:"vmo-provider-chevron"}, IconChevronDownOutline14 ? createElement(IconChevronDownOutline14,{size:12}) : "›"),
 							createElement("span",{className:"vmo-provider-name"}, gProvider),
-							!providers.some(function(p){ return p && p.provider===gProvider; })
+							// 只在官方内置目录（source==="builtin"）之外的提供方显示「自定义」；
+							// providers 里含 registered 自定义渠道，不能仅按「是否在列表」判断
+							!providers.some(function(p){ return p && p.provider===gProvider && p.source==="builtin"; })
 								? createElement("span",{className:"vmo-provider-custom-tag"}, "自定义")
 								: null,
 							createElement("span",{className:"vmo-provider-count"}, gModels.length + " 个模型")
