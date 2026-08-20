@@ -33,6 +33,20 @@ import {
   visionCacheKey,
 } from './core.js';
 
+/**
+ * pi-ai 的官方内置供应商目录（37 个，含 amazon-bedrock/anthropic/google/
+ * deepseek/minimax/opencode-go 等）。dsh-llm-pi-ai 只在用户配置过的路由上
+ * 暴露 listProviders()，未配置的官方目录在这里读取，供设置页"提供方"下拉
+ * 复用完整列表。动态 import：宿主未装 pi-ai 时不影响插件加载。
+ */
+const piAiCatalog = import('@earendil-works/pi-ai/providers/all')
+  .then((mod) => mod)
+  .catch(() => void 0);
+/** pi-ai 适配器的 API 协议清单（openai-completions/anthropic/…），用于自定义提供方表单。 */
+const piAiProtocols = import('@deepseek-ai/dsh-llm-pi-ai')
+  .then((mod) => typeof mod?.supportedProtocols === 'function' ? mod.supportedProtocols() : [])
+  .catch(() => []);
+
 /** `vision_read_image` 接受的扩展名与媒体类型（与内置 read_image 一致）。 */
 const IMAGE_EXTENSIONS = {
   '.png': 'image/png',
@@ -1051,6 +1065,71 @@ export function apply(ctx, entry) {
         }
       },
     }), 'vision-opencode: models route');
+    wctx.effect(() => wctx.webServer.register({
+      kind: 'exact',
+      path: '/vision-opencode/providers',
+      handler: async (req, res) => {
+        try {
+          if (req.method !== 'GET') {
+            res.writeHead(405);
+            res.end();
+            return;
+          }
+          const providers = [];
+          const seen = new Set();
+          for (const provider of ctx.llm.listProviders()) {
+            let visionModels = [];
+            try {
+              const models = await ctx.llm.listModels(provider.id);
+              visionModels = models
+                .filter((model) => Array.isArray(model.inputModalities)
+                  && model.inputModalities.includes('image'))
+                .map((model) => model.id);
+            } catch (error) {
+              ctx.logger.warn(`vision-opencode: listModels(${provider.id}) failed for provider list`, error);
+            }
+            seen.add(provider.id);
+            providers.push({
+              provider: provider.id,
+              name: typeof provider.name === 'string' ? provider.name : provider.id,
+              visionModels,
+              source: 'registered',
+            });
+          }
+          // 官方内置供应商目录（pi-ai）：即使未配置路由也列出，供"添加模型"
+          // 弹窗复用官方完整提供方列表。
+          const builtin = await piAiCatalog;
+          if (builtin !== void 0 && typeof builtin.getBuiltinProviders === 'function'
+            && typeof builtin.getBuiltinModels === 'function') {
+            for (const providerId of builtin.getBuiltinProviders()) {
+              if (seen.has(providerId)) continue;
+              seen.add(providerId);
+              let visionModels = [];
+              try {
+                visionModels = builtin.getBuiltinModels(providerId)
+                  .filter((model) => Array.isArray(model?.input) && model.input.includes('image'))
+                  .map((model) => model.id);
+              } catch (error) {
+                ctx.logger.warn(`vision-opencode: builtin models(${providerId}) failed`, error);
+              }
+              providers.push({
+                provider: providerId,
+                name: providerId,
+                visionModels,
+                source: 'builtin',
+              });
+            }
+          }
+          json(res, 200, {
+            providers,
+            protocols: await piAiProtocols,
+          });
+        } catch (error) {
+          ctx.logger.error('vision-opencode: /vision-opencode/providers failed', error);
+          json(res, 500, { error: error?.message ?? String(error) });
+        }
+      },
+    }), 'vision-opencode: providers route');
     wctx.effect(() => wctx.webServer.register({
       kind: 'exact',
       path: '/vision-opencode/vision-models',
