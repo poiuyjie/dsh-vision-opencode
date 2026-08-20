@@ -516,25 +516,56 @@ export function apply(ctx, entry) {
    * 读不到目录（非 pi-ai、版本变化）时回退适配器面值，绝不误报「能关」。
    */
   let offCatalogCache = { provider: null, byId: null };
+  /** 尽力定位 pi-ai 的 provider 模型数据文件（JSON）；读不到返回 null。 */
+  async function readPiAiCatalogFile(provider) {
+    const fs = await import('node:fs').catch(() => null);
+    const pathMod = fs ? await import('node:path').catch(() => null) : null;
+    if (!fs || !pathMod) return null;
+    const os = await import('node:os').catch(() => null);
+    const home = (typeof process !== 'undefined' && (process.env.HOME || process.env.USERPROFILE))
+      || (os && typeof os.homedir === 'function' ? os.homedir() : null) || null;
+    const dshRoots = [];
+    if (home) {
+      dshRoots.push((process.env.DSH_HOME || pathMod.join(home, '.dsh')));
+      dshRoots.push(pathMod.join(home, '.dsh', 'profiles'));
+    }
+    dshRoots.push(pathMod.join(process.cwd === void 0 ? '' : process.cwd(), 'node_modules'));
+    const fileName = provider.replace(/[^a-zA-Z0-9_.-]/g, '') + '.json';
+    const candidates = [];
+    for (const root of dshRoots) {
+      if (!root) continue;
+      candidates.push(pathMod.join(root, 'profiles', 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers', 'data', fileName));
+      candidates.push(pathMod.join(root, 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers', 'data', fileName));
+    }
+    for (const file of candidates) {
+      try {
+        if (fs.existsSync(file) && fs.statSync(file).isFile()) return JSON.parse(fs.readFileSync(file, 'utf8'));
+      } catch { /* continue */ }
+    }
+    return null;
+  }
   async function offCatalog(provider) {
     if (offCatalogCache.provider === provider) return offCatalogCache.byId;
     let byId = null;
-    try {
-      const mod = await import('@earendil-works/pi-ai/providers/' + provider + '.models');
-      const raw = mod && (mod.OPENCODE_GO_MODELS ?? mod.default);
-      if (raw && typeof raw === 'object') {
-        const ids = Object.keys(raw);
-        byId = {};
-        for (const id of ids) {
-          const entry = raw[id];
-          if (!entry) continue;
-          byId[id] = {
-            reasoning: entry.reasoning === true || entry.reasoning === false ? entry.reasoning : undefined,
-            tlm: entry.thinkingLevelMap && typeof entry.thinkingLevelMap === 'object' ? entry.thinkingLevelMap : undefined,
-          };
-        }
+    // 优先读 pi-ai 数据 JSON（跨安装位置最稳），失败再动态 import 其 module
+    let raw = await readPiAiCatalogFile(provider);
+    if (raw === null) {
+      try {
+        const mod = await import('@earendil-works/pi-ai/providers/' + provider + '.models');
+        raw = mod && (mod.OPENCODE_GO_MODELS ?? mod.default);
+      } catch { raw = null; }
+    }
+    if (raw && typeof raw === 'object') {
+      const items = Array.isArray(raw) ? raw : Object.values(raw);
+      byId = {};
+      for (const entry of items) {
+        if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string') continue;
+        byId[entry.id] = {
+          reasoning: entry.reasoning === true || entry.reasoning === false ? entry.reasoning : undefined,
+          tlm: entry.thinkingLevelMap && typeof entry.thinkingLevelMap === 'object' ? entry.thinkingLevelMap : undefined,
+        };
       }
-    } catch { /* pi-ai 目录不可用：byId=null */ }
+    }
     offCatalogCache = { provider, byId };
     return byId;
   }
