@@ -215,6 +215,8 @@ window.__ModuleLoader__.load({
 			".vmo-provider-head-row{display:flex;align-items:center;gap:8px;width:100%}",
 			".vmo-provider-head-edit{flex:none;height:26px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:13px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;cursor:pointer;display:inline-flex;align-items:center;gap:4px}",
 			".vmo-provider-head-edit:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
+			".vmo-provider-head-del{color:var(--dsw-alias-state-error-primary)}",
+			".vmo-provider-head-del:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}",
 			".vmo-provider-head{display:flex;align-items:center;gap:8px;width:100%;padding:2px 0;border:none;background:transparent;color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px;cursor:pointer;text-align:left}",
 			".vmo-provider-head:hover{color:var(--dsw-alias-label-secondary)}",
 			".vmo-provider-chevron{flex:none;font-size:12px;color:var(--dsw-alias-label-tertiary);transition:transform 120ms ease;transform:rotate(-90deg);display:inline-flex}",
@@ -993,7 +995,10 @@ window.__ModuleLoader__.load({
 			var doDelete = function(){
 				if(!delTarget) return;
 				setBusy(true);
-				fetch("/vision-opencode/vision-models?id="+encodeURIComponent(delTarget.id),{method:"DELETE"})
+				var url = delTarget.providerLevel
+					? "/vision-opencode/vision-models?provider="+encodeURIComponent(delTarget.provider)
+					: "/vision-opencode/vision-models?id="+encodeURIComponent(delTarget.id);
+				fetch(url,{method:"DELETE"})
 				.then(function(r){ return r.json().then(function(j){ return {ok:r.ok,body:j}; }); })
 				.then(function(res){
 					setBusy(false);
@@ -1266,7 +1271,8 @@ window.__ModuleLoader__.load({
 							createElement("span",{className:"vmo-provider-name"}, gProvider),
 							createElement("span",{className:"vmo-provider-count"}, gModels.length + " 个模型")
 						),
-						createElement("button",{type:"button", className:"vmo-provider-head-edit", title:"编辑提供方及其所有模型", disabled:busy, onClick:(function(p, gms){ return function(){ openEditProvider(p, gms); }; })(gProvider, gModels)}, IconEditOutline16 ? createElement(IconEditOutline16,{size:12}) : null, " 编辑")
+						createElement("button",{type:"button", className:"vmo-provider-head-edit", title:"编辑提供方及其所有模型", disabled:busy, onClick:(function(p, gms){ return function(){ openEditProvider(p, gms); }; })(gProvider, gModels)}, IconEditOutline16 ? createElement(IconEditOutline16,{size:12}) : null, " 编辑"),
+						createElement("button",{type:"button", className:"vmo-provider-head-edit vmo-provider-head-del", title:"删除提供方及其所有模型", disabled:busy, onClick:(function(p, gms){ return function(){ setDelTarget({ provider: p, model: "", providerLevel: true, modelCount: gms.length }); }; })(gProvider, gModels)}, IconTrashOutline16 ? createElement(IconTrashOutline16,{size:12}) : null, " 删除")
 					),
 					_open ? createElement("ul",{className:C.rows, style:{marginTop:"0"}}, gItems) : null
 				));
@@ -1507,7 +1513,9 @@ window.__ModuleLoader__.load({
 
 			var delEl = null;
 			if(delTarget){
-				var delContent = createElement("div",{style:{fontSize:"14px",lineHeight:"22px",color:"var(--dsw-alias-label-secondary)"}}, "确定删除 ", createElement("b",{style:{color:"var(--dsw-alias-label-primary)"}}, delTarget.provider+"/"+delTarget.model), " 吗？此操作会从 setting.yaml 移除，无法撤销。");
+				var delContent = delTarget.providerLevel
+					? createElement("div",{style:{fontSize:"14px",lineHeight:"22px",color:"var(--dsw-alias-label-secondary)"}}, "确定删除提供方 ", createElement("b",{style:{color:"var(--dsw-alias-label-primary)"}}, delTarget.provider), " 及其 ", createElement("b",{style:{color:"var(--dsw-alias-label-primary)"}}, delTarget.modelCount), " 个模型吗？此操作会从 setting.yaml 移除，无法撤销。")
+					: createElement("div",{style:{fontSize:"14px",lineHeight:"22px",color:"var(--dsw-alias-label-secondary)"}}, "确定删除 ", createElement("b",{style:{color:"var(--dsw-alias-label-primary)"}}, delTarget.provider+"/"+delTarget.model), " 吗？此操作会从 setting.yaml 移除，无法撤销。");
 				var delFooter = createElement("div",{className:"vmo-modal-actions"},
 					createElement("button",{type:"button", className:"vmo-btn-secondary", onClick:function(){ setDelTarget(null); }}, "取消"),
 					createElement("button",{type:"button", className:"vmo-btn-primary", style:{background:"var(--dsw-alias-state-error-primary)"}, disabled:busy, onClick:doDelete}, busy?"删除中…":"删除")

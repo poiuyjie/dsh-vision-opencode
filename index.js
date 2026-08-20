@@ -1533,15 +1533,33 @@ export function apply(ctx, entry) {
           if (req.method === 'DELETE') {
             const url = new URL(req.url ?? '/vision-opencode/vision-models', 'http://127.0.0.1');
             let id = url.searchParams.get('id')?.trim() ?? '';
+            const providerParam = url.searchParams.get('provider')?.trim() ?? '';
             if (id.length === 0) {
               const body = await readJsonBody(req);
               id = typeof body?.id === 'string' ? body.id.trim() : '';
+            }
+            const models = [...options().visionModels];
+            if (providerParam.length > 0) {
+              // 提供方级删除：移除该提供方下所有模型
+              const before = models.length;
+              const nextModels = models.filter((e) => e.provider !== providerParam);
+              if (nextModels.length === before) {
+                json(res, 404, { error: `provider "${providerParam}" has no vision models` });
+                return;
+              }
+              const nextCfg = { ...options(), visionModels: nextModels };
+              if (settingsScope !== void 0) {
+                await settingsScope.replace(nextCfg);
+              } else {
+                current = () => nextCfg;
+              }
+              json(res, 200, { models: options().visionModels, removed: before - nextModels.length });
+              return;
             }
             if (id.length === 0) {
               json(res, 400, { error: 'id is required' });
               return;
             }
-            const models = [...options().visionModels];
             const idx = models.findIndex((e) => e.id === id);
             if (idx === -1) {
               json(res, 404, { error: `vision model "${id}" not found` });
