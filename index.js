@@ -1346,6 +1346,16 @@ export function apply(ctx, entry) {
           }
           const providers = [];
           const seen = new Set();
+          // 官方判定「自定义」用的是 LlmConfigurableProvider.declared === true：
+          // 适配器只因为配置声明才认识该渠道（网关/自托管），区别于它自带的（内置）。
+          const configurableByProvider = new Map();
+          try {
+            for (const cp of ctx.llm.listConfigurableProviders()) {
+              if (cp && typeof cp.provider === 'string') configurableByProvider.set(cp.provider, cp);
+            }
+          } catch (error) {
+            /* 旧 host 无此 API：declared 全为 false */
+          }
           // pi-ai 官方内置目录（先取一遍 id 集合，用于给 registered 条目打 official 标记；
           // opencode-go/deepseek 等在 listProviders 里也会出现，不能只靠 source 判断）。
           const officialIds = new Set();
@@ -1371,6 +1381,7 @@ export function apply(ctx, entry) {
               visionModels,
               source: 'registered',
               official: officialIds.has(provider.id),
+              declared: configurableByProvider.get(provider.id)?.declared === true,
             });
           }
           // 官方内置供应商目录（pi-ai）：即使未配置路由也列出，供"添加模型"
@@ -1393,6 +1404,7 @@ export function apply(ctx, entry) {
                 visionModels,
                 source: 'builtin',
                 official: true,
+                declared: false,
               });
             }
           }

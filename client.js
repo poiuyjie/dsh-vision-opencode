@@ -1270,9 +1270,9 @@ window.__ModuleLoader__.load({
 						createElement("button",{type:"button", className:"vmo-provider-head", "aria-expanded": _open, onClick:(function(p){ return function(){ toggleExpand(p); }; })(gProvider)},
 							createElement("span",{className:"vmo-provider-chevron"}, IconChevronDownOutline14 ? createElement(IconChevronDownOutline14,{size:12}) : "›"),
 							createElement("span",{className:"vmo-provider-name"}, gProvider),
-							// 「自定义」只标非官方渠道：official（pi-ai builtin 目录，含 opencode-go/deepseek）
-							// 之外的渠道（如 winterapi）显示「自定义」。
-							!providers.some(function(p){ return p && p.provider===gProvider && p.official; })
+							// 与官方模型页一致：declared === true（适配器仅因配置声明认识的渠道，
+							// 如 winterapi 网关/自托管）→ 显示「自定义」；opencode-go/deepseek 等内置不显示。
+							providers.some(function(p){ return p && p.provider===gProvider && p.declared === true; })
 								? createElement("span",{className:"vmo-provider-custom-tag"}, "自定义")
 								: null,
 							createElement("span",{className:"vmo-provider-count"}, gModels.length + " 个模型")
