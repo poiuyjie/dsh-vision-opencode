@@ -57,16 +57,44 @@ window.__ModuleLoader__.load({
 		// ---- 跨 desktop/web 端 CSS Module hash 自适配（必须在注入 CSS 与构造 C map 之前）----
 		// desktop 端 DSH 用 zGbnIq_*，web 端 DSH 用 N78Vuq_*（CSS Module 编译 hash 不同），
 		// 且 DSH 编译会重写官方样式选择器但不改 plugin 的字面 className。
-		// 用运行时探测当前页面生效的 hash，把 C map 改成拼接式。
+		// 不写死候选 hash：直接扫描当前页面已注入的样式规则，找出包含我们
+		// 实际复用类名（modelCatalog/editor/rowCard 等）的 hash 前缀。
+		// DSH 升级只要类名不变、只换 hash 前缀，就能自动适配。
 		function detectCssHash() {
+			var targets = ["modelCatalog", "editor", "editorHeader", "rowCard", "addCard", "title"];
+			var found = {};
+			try {
+				for (var si = 0; si < document.styleSheets.length; si++) {
+					var rules;
+					try { rules = document.styleSheets[si].cssRules; } catch (err) { continue; }
+					if (!rules) continue;
+					for (var ri = 0; ri < rules.length; ri++) {
+						var r = rules[ri];
+						if (typeof r.selectorText !== "string") continue;
+						// CSS Module 类名形态：`hash_原类名`（hash 为 5~10 位字母数字）
+						var m = /\.([A-Za-z0-9]{5,10})_([A-Za-z0-9_]+)/.exec(r.selectorText);
+						if (m === null) continue;
+						var hash = m[1] + "_";
+						var cls = m[2];
+						if (targets.indexOf(cls) >= 0 && found[cls] === undefined) found[cls] = hash;
+					}
+				}
+			} catch (err) { /* 样式表不可读时走下方兜底探测 */ }
+			if (found.modelCatalog) return found.modelCatalog;
+			if (found.editor) return found.editor;
+			if (found.rowCard) return found.rowCard;
+			if (found.addCard) return found.addCard;
+			if (found.editorHeader) return found.editorHeader;
+			if (found.title) return found.title;
+			// 兜底：官方 CSS 尚未注入/不可读时，用固定候选注入测试元素探测
 			var probes = ["zGbnIq_", "N78Vuq_", "GL8Viq_", "ZLY6Yq_"];
 			for (var i = 0; i < probes.length; i++) {
-				var cls = probes[i] + "vmo_hash_probe";
+				var cls2 = probes[i] + "vmo_hash_probe";
 				var s = document.createElement("style");
-				s.textContent = "." + cls + " { color: rgb(" + (i+1) + ",0,0) !important; }";
+				s.textContent = "." + cls2 + " { color: rgb(" + (i+1) + ",0,0) !important; }";
 				document.head.appendChild(s);
 				var d = document.createElement("span");
-				d.className = cls;
+				d.className = cls2;
 				document.body.appendChild(d);
 				var c = window.getComputedStyle(d).color;
 				document.body.removeChild(d);
