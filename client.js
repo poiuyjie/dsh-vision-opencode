@@ -1270,10 +1270,9 @@ window.__ModuleLoader__.load({
 						createElement("button",{type:"button", className:"vmo-provider-head", "aria-expanded": _open, onClick:(function(p){ return function(){ toggleExpand(p); }; })(gProvider)},
 							createElement("span",{className:"vmo-provider-chevron"}, IconChevronDownOutline14 ? createElement(IconChevronDownOutline14,{size:12}) : "›"),
 							createElement("span",{className:"vmo-provider-name"}, gProvider),
-							// 「自定义」只标插件自管渠道：不在 DSH provider 列表（listProviders+builtin）里。
-							// opencode-go / deepseek 都在 DSH 列表（registered/builtin）→ 不算自定义；
-							// winterapi 等插件 custom 添加的渠道不在列表 → 显示「自定义」。
-							!providers.some(function(p){ return p && p.provider===gProvider; })
+							// 「自定义」只标非官方渠道：official（pi-ai builtin 目录，含 opencode-go/deepseek）
+							// 之外的渠道（如 winterapi）显示「自定义」。
+							!providers.some(function(p){ return p && p.provider===gProvider && p.official; })
 								? createElement("span",{className:"vmo-provider-custom-tag"}, "自定义")
 								: null,
 							createElement("span",{className:"vmo-provider-count"}, gModels.length + " 个模型")

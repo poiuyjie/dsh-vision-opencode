@@ -1346,6 +1346,13 @@ export function apply(ctx, entry) {
           }
           const providers = [];
           const seen = new Set();
+          // pi-ai 官方内置目录（先取一遍 id 集合，用于给 registered 条目打 official 标记；
+          // opencode-go/deepseek 等在 listProviders 里也会出现，不能只靠 source 判断）。
+          const officialIds = new Set();
+          const builtin = await piAiCatalog;
+          if (builtin !== void 0 && typeof builtin.getBuiltinProviders === 'function') {
+            for (const pid of builtin.getBuiltinProviders()) officialIds.add(pid);
+          }
           for (const provider of ctx.llm.listProviders()) {
             let visionModels = [];
             try {
@@ -1363,13 +1370,12 @@ export function apply(ctx, entry) {
               name: typeof provider.name === 'string' ? provider.name : provider.id,
               visionModels,
               source: 'registered',
+              official: officialIds.has(provider.id),
             });
           }
           // 官方内置供应商目录（pi-ai）：即使未配置路由也列出，供"添加模型"
           // 弹窗复用官方完整提供方列表。
-          const builtin = await piAiCatalog;
-          if (builtin !== void 0 && typeof builtin.getBuiltinProviders === 'function'
-            && typeof builtin.getBuiltinModels === 'function') {
+          if (builtin !== void 0 && typeof builtin.getBuiltinModels === 'function') {
             for (const providerId of builtin.getBuiltinProviders()) {
               if (seen.has(providerId)) continue;
               seen.add(providerId);
@@ -1386,6 +1392,7 @@ export function apply(ctx, entry) {
                 name: providerId,
                 visionModels,
                 source: 'builtin',
+                official: true,
               });
             }
           }
