@@ -836,7 +836,13 @@ window.__ModuleLoader__.load({
 			var buildReasonRow = function(vm){
 				var rkey = vm.provider+"/"+vm.model;
 				var rinfo = reasonInfo[rkey] || null;
-				var offOk = rinfo ? rinfo.offSupported : true;
+				// 直接看档位里有没有 'off'（不依赖服务端 offSupported 标志，避免旧 host 误判）
+				var offOk = rinfo
+					? (Array.isArray(rinfo.efforts) && rinfo.efforts.some(function(e){
+						var id = typeof e === "string" ? e : (e && e.id) || "";
+						return id === "off";
+					}))
+					: true;
 				var cur = vm.reasoning || "";
 				var opts = offOk ? [["","默认"],["off","关闭"]] : [["","默认"],["forceOff","强制关闭"]];
 				var hint;
