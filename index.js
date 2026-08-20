@@ -533,8 +533,19 @@ export function apply(ctx, entry) {
     const levels = await supportedLevels(route);
     return levels !== null && levels.has('off') ? 'off' : void 0;
   }
-  /** 强制关闭直连（仅 opencode-go / OpenAI-completions）：带 reasoning_effort:'none'。
-   *  成功返回分析文本；任何失败返回 undefined，由调用方回退正常路径（UI 已提示不保证成功）。 */
+  /** 直连网关时「关闭思考」的候选 wire 参数（各家命名混乱，无统一标准）：
+   *  1) thinking:{type:disabled}   —— 大多数 OpenAI 兼容厂商都认
+   *  2) reasoning_effort:"none"     —— 一部分厂商（已实测 MiMo 生效）
+   *  3) enable_thinking:false       —— Qwen3 系原生
+   *  按顺序试，并用响应里的 reasoning_tokens 反馈：0=真关了（记住该参数，后续直连复用）；
+   *  >0=没关掉换下一个；厂商拒绝该参数（4xx/5xx）也换下一个。全部不理想就返回第一个有结果的文本
+   *  （尽力而为，UI 已标注「不保证成功」）。 */
+  const FORCE_OFF_CANDIDATES = [
+    { key: 'THINKING_DISABLED', patch: { thinking: { type: 'disabled' } } },
+    { key: 'REASONING_EFFORT_NONE', patch: { reasoning_effort: 'none' } },
+    { key: 'ENABLE_THINKING_FALSE', patch: { enable_thinking: false } },
+  ];
+  let forceOffWinning = null; // { route, candKey }
   async function callVisionForceOffDirect(ref, signal, question, route) {
     try {
       if (route.provider !== 'opencode-go') return void 0;
@@ -545,40 +556,66 @@ export function apply(ctx, entry) {
       if (!apiKey || !bytes || (typeof bytes.byteLength === 'number' && bytes.byteLength === 0)) return void 0;
       const mediaType = (ref && typeof ref.mediaType === 'string' && ref.mediaType) || 'image/png';
       const b64 = Buffer.from(bytes).toString('base64');
-      const body = {
-        model: route.model,
-        max_tokens: 1024,
-        reasoning_effort: 'none',
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: question !== void 0 && typeof question === 'string' && question.trim().length > 0
-              ? `请分析这张图片：${question.trim()}`
-              : '请详细分析这张图片的内容（中文）。' },
-            { type: 'image_url', image_url: { url: `data:${mediaType};base64,${b64}` } },
-          ],
-        }],
+      const baseMessage = {
+        role: 'user',
+        content: [
+          { type: 'text', text: question !== void 0 && typeof question === 'string' && question.trim().length > 0
+            ? `请分析这张图片：${question.trim()}`
+            : '请详细分析这张图片的内容（中文）。' },
+          { type: 'image_url', image_url: { url: `data:${mediaType};base64,${b64}` } },
+        ],
       };
-      const resp = await fetch('https://opencode.ai/zen/go/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify(body),
-        signal,
-      });
-      if (!resp.ok) return void 0;
-      const data = await resp.json();
-      const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-      const text = Array.isArray(content)
-        ? content.filter((b) => b && b.type === 'text').map((b) => b.text).join('')
-        : (typeof content === 'string' ? content : '');
-      return text.trim().length > 0 ? text.trim() : void 0;
+      const routeKey = route.provider + '\0' + route.model;
+      // 已为这个模型实测出生效的关闭参数 → 快路径，直接复用
+      let order = FORCE_OFF_CANDIDATES;
+      if (forceOffWinning !== null && forceOffWinning.route === routeKey) {
+        const winCand = FORCE_OFF_CANDIDATES.find((c) => c.key === forceOffWinning.candKey);
+        if (winCand !== void 0) order = [winCand];
+      }
+      let bestText = void 0;
+      for (const cand of order) {
+        const body = Object.assign({ model: route.model, max_tokens: 1024, messages: [baseMessage] }, cand.patch);
+        let resp;
+        try {
+          resp = await fetch('https://opencode.ai/zen/go/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+            body: JSON.stringify(body),
+            signal,
+          });
+        } catch { continue; }
+        if (!resp.ok) continue; // 该参数厂商不认 → 换一个
+        let data;
+        try { data = await resp.json(); } catch { continue; }
+        const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+        const text = Array.isArray(content)
+          ? content.filter((b) => b && b.type === 'text').map((b) => b.text).join('')
+          : (typeof content === 'string' ? content : '');
+        if (text.trim().length === 0) continue;
+        const usage = data && data.usage || {};
+        const rt = (typeof usage.reasoning_tokens === 'number' ? usage.reasoning_tokens
+          : (usage.completion_tokens_details && typeof usage.completion_tokens_details.reasoning_tokens === 'number'
+            ? usage.completion_tokens_details.reasoning_tokens : void 0));
+        if (typeof bestText !== 'string') bestText = text.trim();
+        if (rt === 0) {
+          forceOffWinning = { route: routeKey, candKey: cand.key }; // 真关了 → 记忆
+          return text.trim();
+        }
+        if (rt === void 0) {
+          // 厂商没报 reasoning_tokens：无法确认但更可能已关 → 采用并记忆
+          forceOffWinning = { route: routeKey, candKey: cand.key };
+          return text.trim();
+        }
+        // rt>0：这参数没关掉思考 → 试下一个
+      }
+      return bestText; // 全试过：至少一个成功拿到文本 → 尽力而为；全失败 → undefined
     } catch { return void 0; }
   }
 
   /** 单次识图子调用：组装带图消息 → 流式请求识图模型 → 返回纯文本。 */
   async function callVisionOnce(ref, signal, question) {
     const route = options();
-    // 强制关闭 + 提供方不支持 off 档 → 尝试直连网关发 reasoning_effort:'none'（不保证成功）
+    // 强制关闭 + 提供方不支持 off 档 → 尝试直连网关（自适应多参数试出该厂商的关闭方式，不保证成功）
     if (activeStrategy(route) === 'forceOff') {
       const levels = await supportedLevels(route);
       if (!(levels !== null && levels.has('off'))) {
