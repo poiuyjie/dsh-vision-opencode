@@ -839,11 +839,16 @@ window.__ModuleLoader__.load({
 				var offOk = rinfo ? rinfo.offSupported : true;
 				var cur = vm.reasoning || "";
 				var opts = offOk ? [["","默认"],["off","关闭"]] : [["","默认"],["forceOff","强制关闭"]];
-				if(!rinfo){ setTimeout(function(){ ensureReasonInfo(vm); }, 0); }
-				var hint = rinfo && rinfo.efforts && rinfo.efforts.length > 0
-					? "提供方档位："+rinfo.efforts.join(", ")
-					: (rinfo ? "未申报档位" : "读取能力…");
-				if(!offOk) hint += " · 无「关闭」档，仅能尝试";
+				var hint;
+				if(!rinfo){
+					hint = "读取能力…";
+				} else if(rinfo.efforts && rinfo.efforts.length > 0){
+					var effStr = rinfo.efforts.map(function(e){ return typeof e==="string" ? e : String((e && e.id) || ""); }).filter(Boolean).join(", ");
+					hint = "提供方档位："+effStr;
+				} else {
+					hint = "未申报档位";
+				}
+				if(hint !== "读取能力…" && !offOk) hint += " · 无「关闭」档，仅能尝试";
 				if(cur === "forceOff") hint += " · 不保证成功";
 				return createElement("div",{className:"vmo-settings-reason-row"},
 					createElement("span",{className:"vmo-settings-reason-label"},"推理"),
@@ -856,6 +861,20 @@ window.__ModuleLoader__.load({
 					createElement("div",{className:"vmo-settings-reason-hint"}, hint)
 				);
 			};
+			// 一次性为所有未读取能力的模型调度请求（避免渲染期重复 setState 造成刷新风暴）
+			useEffect(function(){
+				if(loading || err) return;
+				if(!Array.isArray(models) || models.length===0) return;
+				var seen = {};
+				for(var i=0;i<models.length;i++){
+					var vm = models[i];
+					if(!vm) continue;
+					var k = vm.provider+"/"+vm.model;
+					if(seen[k] || reasonInfo[k] || reasonLoading[k]) continue;
+					seen[k] = true;
+					(function(v){ setTimeout(function(){ ensureReasonInfo(v); }, 0); })(vm);
+				}
+			}, [models, loading, err, reasonInfo, reasonLoading]);
 
 			var header = createElement("div",{className:"vmo-settings-head", style:{marginBottom:"0"} },
 				createElement("h3",{className:"vmo-settings-title"},"Vision 模型"),

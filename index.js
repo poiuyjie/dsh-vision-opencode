@@ -515,7 +515,13 @@ export function apply(ctx, entry) {
     try {
       const info = await ctx.llm.resolveModelInfo(route.provider, route.model);
       const efforts = info?.reasoning?.efforts;
-      if (Array.isArray(efforts)) levels = new Set(efforts);
+      // efforts 是 {id,name} 对象数组；只取字符串 id，使 Set.has('off')/排序/JSON 都正确
+      if (Array.isArray(efforts)) {
+        const ids = efforts
+          .map((e) => (typeof e === 'string' ? e : (e && typeof e.id === 'string' ? e.id : '')))
+          .filter((s) => s.length > 0);
+        levels = new Set(ids);
+      }
     } catch { /* 元数据不可用：levels=null */ }
     reasoningLevelsCache = { key, levels };
     return levels;
