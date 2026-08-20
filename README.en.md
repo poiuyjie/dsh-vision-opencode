@@ -139,6 +139,14 @@ Each model has a "Reasoning" row in **Settings → Vision** that controls whethe
 - The overall vision-reasoning toggle (on = provider default level, off = no thinking) is a runtime global switch, overridable per model via the "Reasoning" row.
 - Turning reasoning off usually cuts first-token latency and token usage noticeably; MiMo V2.5 is verified to actually stop thinking with `reasoning_effort:"none"`.
 
+Settings page effect (with opencode-go as an example: every model only shows "Default / Force off" and hints "no 'Off' level, best-effort only"):
+
+<p align="center">
+  <img src="assets/reasoning-off.png" alt="Vision model reasoning off / force off settings" width="860" />
+</p>
+
+> ⚠️ **Providers' "turning off thinking" declarations are chaotic, so there is no guarantee this works.** Different vendors declare it very differently — some use `off:"none"` (e.g. hy3), some `off:null`, and some have no such field at all; even the same model's `thinkingLevelMap` often doesn't line up across providers. The plugin can only tell "Off" from "Force off" as truthfully as each provider catalog allows, and then best-effort a disabling parameter (e.g. `reasoning_effort:"none"`). **There is no guarantee every provider can actually disable thinking** — the UI marks Force off as "not guaranteed".
+
 <details>
 <summary>Advanced: manual uninstall</summary>
 

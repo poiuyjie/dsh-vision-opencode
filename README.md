@@ -140,6 +140,14 @@ vision-opencode:
 - 识图推理开关（开启=默认档位 / 关闭=不思考）是运行时全局开关，每模型「推理」行可单独覆盖。
 - 关掉思考通常能明显降低首 token 延迟和 token 花费；MiMo V2.5 实测传 `reasoning_effort:"none"` 可真正关掉思考。
 
+设置页效果（以 opencode-go 为例：每个模型只有「默认 / 强制关闭」，并提示「无『关闭』档，仅能尝试」）：
+
+<p align="center">
+  <img src="assets/reasoning-off.png" alt="Vision 模型推理关闭/强制关闭设置" width="860" />
+</p>
+
+> ⚠️ **各供应商对「关闭思考」的声明很混乱，无法保证一定能实现。** 不同厂商声明方式五花八门——有的用 `off:"none"`（如 hy3），有的是 `off:null`，有的根本没有相关字段，连同一个模型的 `thinkingLevelMap` 各家也常对不上。插件只能按各厂目录如实区分「关闭」与「强制关闭」，并尽力试参数（如 `reasoning_effort:"none"`）；但**不保证每个供应商都能真正关掉思考**，强行关闭时界面已标注「不保证成功」。
+
 <details>
 <summary>高级：手动卸载</summary>
 
