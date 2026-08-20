@@ -125,6 +125,20 @@ Chat attachments and workspace images use complementary paths. Attachments must 
 
 `autoConvert` applies to every route that DSH declares as text-only. The plugin re-reads capabilities after a provider/model switch; native multimodal routes retain their original image path.
 
+## Turning off reasoning for the vision model
+
+Each model has a "Reasoning" row in **Settings → Vision** that controls whether the vision model thinks while reading images:
+
+| Option | Meaning |
+|---|---|
+| Default | Follow the provider's default level — the vision model thinks normally |
+| Off | No thinking — faster and cheaper. Only offered when the provider **really declares** an off level (e.g. `hy3`'s `off:"none"`) |
+| Force off | Experimental — best-effort at disabling thinking (adaptive params such as `reasoning_effort:"none"`), **not guaranteed**. This is what models without a declared off (like MiMo) get |
+
+- Very few models have a real "Off" entry; the rest show "Default / Force off" with a "not guaranteed" note.
+- The overall vision-reasoning toggle (on = provider default level, off = no thinking) is a runtime global switch, overridable per model via the "Reasoning" row.
+- Turning reasoning off usually cuts first-token latency and token usage noticeably; MiMo V2.5 is verified to actually stop thinking with `reasoning_effort:"none"`.
+
 <details>
 <summary>Advanced: manual uninstall</summary>
 
