@@ -1374,8 +1374,14 @@ window.__ModuleLoader__.load({
 							if(typeof fetchModelsFromProvider!=="function"){ showToast("获取模型不可用"); return; }
 							setPicker({candidates:[], selected:new Set(), busy:true});
 							fetchModelsFromProvider(modal, function(fresh){
-								// 默认全选所有候选：与目标 picker 视觉一致（用户剔除不想要的比主动勾选更顺手）。
-								setPicker({candidates:fresh, selected:new Set(fresh.map(function(c){ return c.id; })), busy:false});
+								// 只勾选已在模型目录里的模型（不再默认全选）；
+								// 其余候选保持未勾选，由用户主动勾选或使用下方「全选」。
+								var exist = {};
+								var ml = Array.isArray(modal.models) ? modal.models : [];
+								for(var _li=0;_li<ml.length;_li++){ var _mm=ml[_li]; if(_mm && typeof _mm.id==="string") exist[_mm.id]=true; }
+								var sel = new Set();
+								for(var _fi=0;_fi<fresh.length;_fi++){ if(exist[fresh[_fi].id]) sel.add(fresh[_fi].id); }
+								setPicker({candidates:fresh, selected:sel, busy:false});
 							}, showToast, api);
 						}}, busy||!!picker ? "获取中…" : "获取可用模型")
 					)
@@ -1574,9 +1580,21 @@ window.__ModuleLoader__.load({
 					}))];
 				}
 				var pickerBody = pickerBodyChildren;
+				// 全选/取消全选：全部候选已勾选 → 取消全选；否则全选。
+				var allChecked = pickerCandidates.length>0 && pickerSelected.size===pickerCandidates.length;
+				var toggleAll = function(){
+					var next = new Set(pickerSelected);
+					if(allChecked){ next.clear(); }
+					else { for(var _ti=0;_ti<pickerCandidates.length;_ti++){ next.add(pickerCandidates[_ti].id); } }
+					setPicker({candidates:picker.candidates, selected:next, busy:false});
+				};
 				// footer 按钮也走官方：editorActions + secondaryButton / primaryButton，
 					// 与编辑器「添加提供方」dialog 完全一致；保持 picker 与编辑器的 footer 视觉同源。
 				var pickerFooter = createElement("div",{className:"vmo-modal-actions"},
+					createElement("label",{style:{display:"inline-flex",alignItems:"center",gap:"6px",fontSize:"13px",color:"var(--dsw-alias-label-secondary)",cursor:"pointer",marginRight:"auto"}},
+						createElement("input",{type:"checkbox", checked:allChecked, disabled:picker.busy||pickerCandidates.length===0, onChange:toggleAll, style:{margin:0,width:"14px",height:"14px",accentColor:"var(--dsw-alias-button-primary-fill,var(--dsw-alias-state-success-primary))"}}),
+						createElement("span",null, allChecked ? "取消全选" : "全选")
+					),
 					createElement("button",{type:"button", className:"vmo-btn-secondary", disabled:picker.busy, onClick:closePicker}, "取消"),
 					createElement("button",{type:"button", className:"vmo-btn-primary", disabled:picker.busy||pickerSelected.size===0, onClick:addSelected}, "添加所选")
 				);
