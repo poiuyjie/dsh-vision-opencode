@@ -1445,6 +1445,59 @@ export function apply(ctx, entry) {
           }
           if (req.method === 'PUT') {
             const body = await readJsonBody(req);
+            // 提供方级批量更新：编辑整个提供方及其所有模型（body 带 models 数组）。
+            // 按 entryId 匹配现有条目做更新；无 entryId 的按 (provider, model) 匹配；
+            // 都不匹配的创建新条目；提供方下未出现在 want 里的条目被移除（视为删除）。
+            if (Array.isArray(body?.models)) {
+              const provider = typeof body?.provider === 'string' ? body.provider.trim() : '';
+              if (provider.length === 0) {
+                json(res, 400, { error: 'provider is required' });
+                return;
+              }
+              const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
+              const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : (body?.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions');
+              const want = body.models
+                .filter((m) => m !== null && typeof m === 'object' && typeof m?.id === 'string' && m.id.trim().length > 0)
+                .map((m) => ({
+                  entryId: typeof m?.entryId === 'string' && m.entryId.length > 0 ? m.entryId : '',
+                  model: m.id.trim(),
+                  name: typeof m?.name === 'string' ? m.name.trim() : '',
+                }));
+              if (want.length === 0) {
+                json(res, 400, { error: 'at least one model is required' });
+                return;
+              }
+              const current = [...options().visionModels];
+              const keep = current.filter((e) => e.provider !== provider);
+              const next = [];
+              const used = new Set();
+              for (const m of want) {
+                let existing = null;
+                if (m.entryId.length > 0) {
+                  existing = current.find((e) => e.id === m.entryId && e.provider === provider) ?? null;
+                }
+                if (existing === null) {
+                  existing = current.find((e) => e.provider === provider && e.model === m.model) ?? null;
+                }
+                if (existing !== null && !used.has(existing.id)) {
+                  used.add(existing.id);
+                  next.push({ ...existing, model: m.model, name: m.name, baseUrl, requestFormat });
+                } else if (existing === null) {
+                  const freshId = `${provider}__${m.model}__${Date.now().toString(36)}_${next.length}`;
+                  next.push({ id: freshId, provider, model: m.model, name: m.name, description: '', baseUrl, requestFormat, reasoning: '' });
+                }
+                // existing 已被占用（同一模型重复出现）：跳过以保持唯一
+              }
+              const all = [...keep, ...next];
+              if (settingsScope !== void 0) {
+                await settingsScope.replace({ ...options(), visionModels: all });
+              } else {
+                const nextCfg = { ...options(), visionModels: all };
+                current = () => nextCfg;
+              }
+              json(res, 200, { models: options().visionModels, updated: next });
+              return;
+            }
             const id = typeof body?.id === 'string' ? body.id.trim() : '';
             const provider = typeof body?.provider === 'string' ? body.provider.trim() : '';
             const model = typeof body?.model === 'string' ? body.model.trim() : '';

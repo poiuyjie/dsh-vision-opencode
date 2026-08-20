@@ -212,6 +212,9 @@ window.__ModuleLoader__.load({
 			".vmo-provider-group{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:10px 12px;background:var(--dsw-alias-bg-primary)}",
 			".vmo-provider-group ." + cssHash + "rowCard{background:var(--dsw-alias-bg-primary)}",
 			".vmo-provider-group ." + cssHash + "modelEntry{background:var(--dsw-alias-bg-primary)}",
+			".vmo-provider-head-row{display:flex;align-items:center;gap:8px;width:100%}",
+			".vmo-provider-head-edit{flex:none;height:26px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:13px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;cursor:pointer;display:inline-flex;align-items:center;gap:4px}",
+			".vmo-provider-head-edit:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
 			".vmo-provider-head{display:flex;align-items:center;gap:8px;width:100%;padding:2px 0;border:none;background:transparent;color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px;cursor:pointer;text-align:left}",
 			".vmo-provider-head:hover{color:var(--dsw-alias-label-secondary)}",
 			".vmo-provider-chevron{flex:none;font-size:12px;color:var(--dsw-alias-label-tertiary);transition:transform 120ms ease;transform:rotate(-90deg);display:inline-flex}",
@@ -932,8 +935,9 @@ window.__ModuleLoader__.load({
 				keyWrite.then(function(keyFailed){
 					if(keyFailed){ setBusy(false); showToast("API 密钥保存失败"); return; }
 					if(isEdit){
-						// 编辑模式：只更新当前条目
-						var bodyObj = { id: modal.data.id, provider:p, model: modelList[0].id, name:n, description:d };
+						// 编辑模式：批量更新整个提供方及其所有模型（官方 provider 级编辑语义）。
+						// models 里的条目带 _entryId 用于后端区分更新/新增/删除。
+						var bodyObj = { provider: p, models: modelList.map(function(mm){ return { id: mm.id, name: mm.name||"", entryId: mm._entryId||"" }; }) };
 						if(isCustom){ bodyObj.baseUrl = extra.baseUrl; bodyObj.requestFormat = extra.requestFormat; }
 						fetch("/vision-opencode/vision-models",{method:"PUT", headers:{"content-type":"application/json"}, body: JSON.stringify(bodyObj)})
 						.then(function(r){ return r.json().then(function(j){ return {ok:r.ok,status:r.status,body:j}; }); })
@@ -1201,6 +1205,28 @@ window.__ModuleLoader__.load({
 						grouped[_p].push(_vm);
 					}
 					var groupKeys = Object.keys(grouped).sort();
+					// 编辑整个提供方（及其所有模型）：官方模型页是 provider 级编辑，
+					// 打开编辑器时把该提供方全部模型放进 modal.models（带 _entryId 供批量保存）。
+					var openEditProvider = function(gProvider, gModels){
+						var first = gModels[0] || {};
+						var isCustomEdit = true;
+						for(var _pp4=0; _pp4<providers.length; _pp4++){ if(providers[_pp4] && providers[_pp4].provider===gProvider){ isCustomEdit = false; break; } }
+						setModal({
+							mode: isCustomEdit ? "edit-custom" : "edit",
+							data: {
+								id: first.id||"",
+								provider: isCustomEdit ? "custom" : gProvider,
+								customProvider: isCustomEdit ? gProvider : "",
+								model: first.model||"",
+								name: first.name||"",
+								description: first.description||"",
+								baseUrl: first.baseUrl||"",
+								requestFormat: first.requestFormat||"openai-completions",
+								providerType: isCustomEdit ? "custom" : gProvider
+							},
+							models: gModels.map(function(mm){ return { id: mm.model, name: mm.name||"", _entryId: mm.id }; })
+						});
+					};
 					var groupSections = [];
 					for(var gi=0; gi<groupKeys.length; gi++){
 						var gProvider = groupKeys[gi];
@@ -1221,7 +1247,6 @@ window.__ModuleLoader__.load({
 									isSelected(vm)
 										? createElement("button",{type:"button", className:C.secondaryButton, disabled:true, style:{opacity:0.6,cursor:"default"}}, IconCheckOutline16 ? createElement(IconCheckOutline16,{size:12}) : null, "当前")
 										: createElement("button",{type:"button", className:C.secondaryButton, disabled:busy, style:{borderColor:"var(--dsw-alias-state-success-primary)",color:"var(--dsw-alias-state-success-primary)"}, onClick:(function(v){return function(){ selectAsCurrent(v); };})(vm)}, "设为当前"),
-									createElement("button",{type:"button", className:C.secondaryButton, disabled:busy, onClick:(function(v){return function(){ var isCustomEdit = true; for(var _pp3=0; _pp3<providers.length; _pp3++){ if(providers[_pp3] && providers[_pp3].provider===v.provider){ isCustomEdit = false; break; } } setModal({mode:isCustomEdit?"edit-custom":"edit", data:{id:v.id,provider:isCustomEdit?"custom":v.provider,customProvider:isCustomEdit?v.provider:"",model:v.model,name:v.name||"",description:v.description||"",baseUrl:v.baseUrl||"",requestFormat:v.requestFormat||"openai",providerType:isCustomEdit?"custom":v.provider}, models:[{id:v.model,name:v.name||""}]}); };})(vm)}, IconEditOutline16 ? createElement(IconEditOutline16,{size:12}) : null, "编辑"),
 									createElement("button",{type:"button", className:C.secondaryButton + " " + C.dangerButton, disabled:busy, onClick:(function(v){return function(){ setDelTarget(v); };})(vm)}, IconTrashOutline16 ? createElement(IconTrashOutline16,{size:12}) : null, "删除")
 								)
 							),
@@ -1235,10 +1260,13 @@ window.__ModuleLoader__.load({
 				}
 				var _open = isExpanded(gProvider);
 				groupSections.push(createElement("section",{key:gProvider, className:"vmo-provider-group" + (_open ? " vmo-provider-groupOpen":""), style:{display:"flex",flexDirection:"column",gap:"8px"}},
-					createElement("button",{type:"button", className:"vmo-provider-head", "aria-expanded": _open, onClick:(function(p){ return function(){ toggleExpand(p); }; })(gProvider)},
-						createElement("span",{className:"vmo-provider-chevron"}, IconChevronDownOutline14 ? createElement(IconChevronDownOutline14,{size:12}) : "›"),
-						createElement("span",{className:"vmo-provider-name"}, gProvider),
-						createElement("span",{className:"vmo-provider-count"}, gModels.length + " 个模型")
+					createElement("div",{className:"vmo-provider-head-row"},
+						createElement("button",{type:"button", className:"vmo-provider-head", "aria-expanded": _open, onClick:(function(p){ return function(){ toggleExpand(p); }; })(gProvider)},
+							createElement("span",{className:"vmo-provider-chevron"}, IconChevronDownOutline14 ? createElement(IconChevronDownOutline14,{size:12}) : "›"),
+							createElement("span",{className:"vmo-provider-name"}, gProvider),
+							createElement("span",{className:"vmo-provider-count"}, gModels.length + " 个模型")
+						),
+						createElement("button",{type:"button", className:"vmo-provider-head-edit", title:"编辑提供方及其所有模型", disabled:busy, onClick:(function(p, gms){ return function(){ openEditProvider(p, gms); }; })(gProvider, gModels)}, IconEditOutline16 ? createElement(IconEditOutline16,{size:12}) : null, " 编辑")
 					),
 					_open ? createElement("ul",{className:C.rows, style:{marginTop:"0"}}, gItems) : null
 				));
