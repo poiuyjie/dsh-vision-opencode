@@ -506,6 +506,51 @@ export function apply(ctx, entry) {
     }
   }
 
+  /** 
+   * 真 off 判别：pi-ai 的 getSupportedThinkingLevels 对「thinkingLevelMap 缺失」的模型会
+   * 乐观地把 `off/minimal/low/medium/high` 全部算作支持（只有显式 null 和 xhigh/max 才排除），
+   * 那只是「省略 reasoning 参数」= 厂商默认，不代表能真正关掉思考。
+   * 我们以厂商目录（pi-ai provider models）里 `thinkingLevelMap.off` 的真实声明为准：
+   *   - 有真实 wire 值（如 off:"none"）→ 真申报 off
+   *   - 显式 null / 缺失 / 整表缺失 → 未申报 → 应提供「强制关闭」而非「关闭」
+   * 读不到目录（非 pi-ai、版本变化）时回退适配器面值，绝不误报「能关」。
+   */
+  let offCatalogCache = { provider: null, byId: null };
+  async function offCatalog(provider) {
+    if (offCatalogCache.provider === provider) return offCatalogCache.byId;
+    let byId = null;
+    try {
+      const mod = await import('@earendil-works/pi-ai/providers/' + provider + '.models');
+      const raw = mod && (mod.OPENCODE_GO_MODELS ?? mod.default);
+      if (raw && typeof raw === 'object') {
+        const ids = Object.keys(raw);
+        byId = {};
+        for (const id of ids) {
+          const entry = raw[id];
+          if (!entry) continue;
+          byId[id] = {
+            reasoning: entry.reasoning === true || entry.reasoning === false ? entry.reasoning : undefined,
+            tlm: entry.thinkingLevelMap && typeof entry.thinkingLevelMap === 'object' ? entry.thinkingLevelMap : undefined,
+          };
+        }
+      }
+    } catch { /* pi-ai 目录不可用：byId=null */ }
+    offCatalogCache = { provider, byId };
+    return byId;
+  }
+  /** 该模型是否「真正申报 off」：true=可用 harness 关闭；false=未申报（应走强制关闭）；null=未知。 */
+  async function trueOffSupported(route) {
+    const byId = await offCatalog(route.provider);
+    if (byId === null) return null;
+    const entry = byId[route.model];
+    if (!entry) return null;
+    // 非思考模型：off 是唯一档（本来就不思考），视为真 off
+    if (entry.reasoning === false) return true;
+    if (entry.reasoning === undefined && !entry.tlm) return null; // 目录没描述 overview → 不臆断
+    const tlm = entry.tlm;
+    if (!tlm) return false;                       // 思考模型但没有任何档位声明 → 未申报 off
+    return tlm.off !== undefined && tlm.off !== null && tlm.off !== ''; // 有真实 wire 值才叫申报
+  }
   /** 缓存每个 provider/model 由适配器申报的推理档位集合（null=元数据不可用）。 */
   let reasoningLevelsCache = null;
   async function supportedLevels(route) {
@@ -533,9 +578,14 @@ export function apply(ctx, entry) {
     if (entry && (entry.reasoning === 'off' || entry.reasoning === 'forceOff')) return entry.reasoning;
     return route.visionReasoning === true ? '' : 'off';
   }
-  /** 经 harness 通道能表达的关闭档位：仅当适配器申报了 'off' 才传，否则不传（尽力而为，绝不传空串）。 */
+  /** 经 harness 通道能表达的关闭档位：仅当**真申报**了 'off'（厂商目录 thinkingLevelMap.off 有
+   *  真实 wire 值）才传 'off'；否则不传（尽力而为；pi-ai 面值里的 off 只是省略参数=厂商默认，无效）。 */
   async function visionReasoningParam(route, strategy) {
     if (strategy !== 'off' && strategy !== 'forceOff') return void 0;
+    const off = await trueOffSupported(route);
+    // 真 off / 未知（读不到目录）→ 按适配器面值判断 fallback
+    if (off === false) return void 0;
+    if (off === true) return 'off';
     const levels = await supportedLevels(route);
     return levels !== null && levels.has('off') ? 'off' : void 0;
   }
@@ -621,10 +671,12 @@ export function apply(ctx, entry) {
   /** 单次识图子调用：组装带图消息 → 流式请求识图模型 → 返回纯文本。 */
   async function callVisionOnce(ref, signal, question) {
     const route = options();
-    // 强制关闭 + 提供方不支持 off 档 → 尝试直连网关（自适应多参数试出该厂商的关闭方式，不保证成功）
+    // 强制关闭 + 未真申报 off → 尝试直连网关（自适应多参数试出该厂商的关闭方式，不保证成功）
     if (activeStrategy(route) === 'forceOff') {
-      const levels = await supportedLevels(route);
-      if (!(levels !== null && levels.has('off'))) {
+      const off = await trueOffSupported(route);
+      // 读不到目录时按适配器面值是否有 off 兜底判定
+      const hasOff = off === true || (off === null && (await supportedLevels(route))?.has('off'));
+      if (!hasOff) {
         const directText = await callVisionForceOffDirect(ref, signal, question, route);
         if (directText !== void 0) return directText;
       }
@@ -1318,7 +1370,12 @@ export function apply(ctx, entry) {
           }
           const levels = await supportedLevels({ provider, model });
           const efforts = levels === null ? [] : [...levels].sort();
-          json(res, 200, { provider, model, efforts, offSupported: levels === null ? true : levels.has('off') });
+          const off = await trueOffSupported({ provider, model });
+          // offSupported：真申报（true）/未申报（false）/未知（null）→按面值兜底
+          const offSupported = off === null
+            ? (levels === null ? true : levels.has('off'))
+            : off;
+          json(res, 200, { provider, model, efforts, offSupported });
         } catch (error) {
           ctx.logger.error('vision-opencode: /vision-opencode/reasoning-levels failed', error);
           json(res, 500, { error: error?.message ?? String(error) });

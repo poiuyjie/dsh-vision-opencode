@@ -813,11 +813,12 @@ window.__ModuleLoader__.load({
 						// 多个模型并发完成时，基于 React 保证的最新 prev 合并，互不覆盖
 						setReasonInfo(function(prev){
 							var n = {}; for(var x in prev) n[x]=prev[x];
-							if(j && Array.isArray(j.efforts)){
-								n[k]={ efforts: j.efforts, offSupported: !!j.offSupported };
-							} else {
-								n[k]={ efforts: [], offSupported: true };
-							}
+							var eff = (j && Array.isArray(j.efforts)) ? j.efforts : [];
+							// offSupported 三态：布尔=host 真值；其他(旧 host/未知)=按 efforts 兜底
+							var os = (j && typeof j.offSupported === 'boolean')
+								? j.offSupported
+								: (eff.some(function(e){ var id=typeof e==="string"?e:((e&&e.id)||""); return id==="off"; }));
+							n[k]={ efforts: eff, offSupported: os };
 							return n;
 						});
 						setReasonLoading(function(prev){
@@ -852,12 +853,14 @@ window.__ModuleLoader__.load({
 			var buildReasonRow = function(vm){
 				var rkey = vm.provider+"/"+vm.model;
 				var rinfo = reasonInfo[rkey] || null;
-				// 直接看档位里有没有 'off'（不依赖服务端 offSupported 标志，避免旧 host 误判）
+				// 自 host 侧读取：offSupported 已是「真申报」后的结果（pi-ai 面值里的 off
+				// 只是省略参数=厂商默认，不算能关）。旧 host 没返回该字段时按 efforts 兜底。
 				var offOk = rinfo
-					? (Array.isArray(rinfo.efforts) && rinfo.efforts.some(function(e){
-						var id = typeof e === "string" ? e : (e && e.id) || "";
-						return id === "off";
-					}))
+					? (typeof rinfo.offSupported === "boolean" ? rinfo.offSupported
+						: (Array.isArray(rinfo.efforts) && rinfo.efforts.some(function(e){
+							var id = typeof e === "string" ? e : (e && e.id) || "";
+							return id === "off";
+						})))
 					: true;
 				var cur = vm.reasoning || "";
 				var opts = offOk ? [["","默认"],["off","关闭"]] : [["","默认"],["forceOff","强制关闭"]];
@@ -1137,7 +1140,7 @@ window.__ModuleLoader__.load({
 				}
 			}
 
-			var toastEl = toast2 ? createElement("div",{style:{position:"fixed",left:"50%",top:"16px",transform:"translateX(-50%)",background:"var(--dsw-alias-bg-primary,#333)",color:"var(--dsw-alias-label-primary)",border:"1px solid var(--dsw-alias-border-l2)",padding:"8px 12px",borderRadius:"8px",fontSize:"13px",zIndex:10000,boxShadow:"var(--dsw-shadow-lv3)"}}, toast2) : null;
+			var toastEl = toast2 ? createElement("div",{style:{position:"fixed",left:"50%",top:"16px",transform:"translateX(-50%)",background:"var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-primary,#333))",color:"var(--dsw-alias-label-primary)",border:"1px solid var(--dsw-alias-border-l2)",padding:"8px 12px",borderRadius:"8px",fontSize:"13px",zIndex:10000,boxShadow:"var(--dsw-shadow-lv3)"}}, toast2) : null;
 
 			var sectionChildren = [header, intro];
 			if (systemHint !== null) sectionChildren.push(systemHint);
