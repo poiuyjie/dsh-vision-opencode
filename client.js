@@ -789,31 +789,47 @@ window.__ModuleLoader__.load({
 			};
 
 			// 每模型：提供方申报的推理档位（懒加载缓存）
+			// 去重依据改为「持久 ref 同步锁」而不是状态实时值：
+			// 状态一写入就会引发渲染 → effect 若依赖状态就会再次触发 → 死循环刷新风暴。
+			var useRef = react.useRef;
 			var reasonInfoState = useState({});
 			var reasonInfo = reasonInfoState[0];
 			var setReasonInfo = reasonInfoState[1];
 			var reasonLoadingState = useState({});
 			var reasonLoading = reasonLoadingState[0];
 			var setReasonLoading = reasonLoadingState[1];
+			var reasonSeenState = useRef({});
+			var reasonSeen = reasonSeenState.current;
 			var ensureReasonInfo = function(vm){
-				if(!vm || reasonInfo[vm.provider+"/"+vm.model] || reasonLoading[vm.provider+"/"+vm.model]) return;
+				if(!vm) return;
 				var k = vm.provider+"/"+vm.model;
+				if(reasonSeen[k]) return;   // 同步持久锁：第一个请求到来前就已锁定，后续任何调用直接短路
+				reasonSeen[k] = true;
 				var nl = {}; for(var i in reasonLoading) nl[i]=reasonLoading[i]; nl[k]=true; setReasonLoading(nl);
 				fetch("/vision-opencode/reasoning-levels?provider="+encodeURIComponent(vm.provider)+"&model="+encodeURIComponent(vm.model), {headers:{accept:"application/json"}})
 					.then(function(r){ return r.json().catch(function(){ return null; }); })
 					.then(function(j){
-						var n = {}; for(var x in reasonInfo) n[x]=reasonInfo[x];
-						if(j && Array.isArray(j.efforts)){
-							n[k]={ efforts: j.efforts, offSupported: !!j.offSupported };
-						} else {
-							n[k]={ efforts: [], offSupported: true };
-						}
-						setReasonInfo(n);
-						var n2 = {}; for(var y in reasonLoading) n2[y]=reasonLoading[y]; delete n2[k]; setReasonLoading(n2);
+						// 用函数式更新合并，而不是从闭包快照复制：
+						// 多个模型并发完成时，基于 React 保证的最新 prev 合并，互不覆盖
+						setReasonInfo(function(prev){
+							var n = {}; for(var x in prev) n[x]=prev[x];
+							if(j && Array.isArray(j.efforts)){
+								n[k]={ efforts: j.efforts, offSupported: !!j.offSupported };
+							} else {
+								n[k]={ efforts: [], offSupported: true };
+							}
+							return n;
+						});
+						setReasonLoading(function(prev){
+							var n2 = {}; for(var y in prev) n2[y]=prev[y]; delete n2[k]; return n2;
+						});
 					}).catch(function(){
-						var n = {}; for(var x in reasonInfo) n[x]=reasonInfo[x]; n[k]={ efforts:[], offSupported:true };
-						setReasonInfo(n);
-						var n2 = {}; for(var y in reasonLoading) n2[y]=reasonLoading[y]; delete n2[k]; setReasonLoading(n2);
+						setReasonInfo(function(prev){
+							var n = {}; for(var x in prev) n[x]=prev[x]; n[k]={ efforts:[], offSupported:true }; return n;
+						});
+						setReasonLoading(function(prev){
+							var n2 = {}; for(var y in prev) n2[y]=prev[y]; delete n2[k]; return n2;
+						});
 					});
 			};
 			// 每模型：保存推理策略
@@ -867,20 +883,19 @@ window.__ModuleLoader__.load({
 					createElement("div",{className:"vmo-settings-reason-hint"}, hint)
 				);
 			};
-			// 一次性为所有未读取能力的模型调度请求（避免渲染期重复 setState 造成刷新风暴）
+			// 一次性为所有未读取能力的模型调度请求。
+			// effect 只依赖 [models, loading, err] —— 绝不依赖它自己写入的
+			// reasonInfo/reasonLoading，否则 setState → 渲染 → effect 重触发 → 死循环。
+			// 去重交给 reasonSeen（ref 同步锁），因此这里也无需 setTimeout。
 			useEffect(function(){
 				if(loading || err) return;
 				if(!Array.isArray(models) || models.length===0) return;
-				var seen = {};
 				for(var i=0;i<models.length;i++){
 					var vm = models[i];
 					if(!vm) continue;
-					var k = vm.provider+"/"+vm.model;
-					if(seen[k] || reasonInfo[k] || reasonLoading[k]) continue;
-					seen[k] = true;
-					(function(v){ setTimeout(function(){ ensureReasonInfo(v); }, 0); })(vm);
+					ensureReasonInfo(vm);
 				}
-			}, [models, loading, err, reasonInfo, reasonLoading]);
+			}, [models, loading, err]);
 
 			var header = createElement("div",{className:"vmo-settings-head", style:{marginBottom:"0"} },
 				createElement("h3",{className:"vmo-settings-title"},"Vision 模型"),
