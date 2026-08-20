@@ -54,6 +54,29 @@ window.__ModuleLoader__.load({
 		try { ReactDOMClient = require("react-dom/client"); } catch (_e) {}
 		if (ReactDOMClient === null) { try { ReactDOMClient = require("react-dom"); } catch (_e2) {} }
 
+		// ---- 跨 desktop/web 端 CSS Module hash 自适配（必须在注入 CSS 与构造 C map 之前）----
+		// desktop 端 DSH 用 zGbnIq_*，web 端 DSH 用 N78Vuq_*（CSS Module 编译 hash 不同），
+		// 且 DSH 编译会重写官方样式选择器但不改 plugin 的字面 className。
+		// 用运行时探测当前页面生效的 hash，把 C map 改成拼接式。
+		function detectCssHash() {
+			var probes = ["zGbnIq_", "N78Vuq_", "GL8Viq_", "ZLY6Yq_"];
+			for (var i = 0; i < probes.length; i++) {
+				var cls = probes[i] + "vmo_hash_probe";
+				var s = document.createElement("style");
+				s.textContent = "." + cls + " { color: rgb(" + (i+1) + ",0,0) !important; }";
+				document.head.appendChild(s);
+				var d = document.createElement("span");
+				d.className = cls;
+				document.body.appendChild(d);
+				var c = window.getComputedStyle(d).color;
+				document.body.removeChild(d);
+				document.head.removeChild(s);
+				if (c === "rgb(" + (i+1) + ", 0, 0)") return probes[i];
+			}
+			return "zGbnIq_";
+		}
+		var cssHash = detectCssHash();
+
 		// ---- 注入样式：逐字复刻官方 ModelSelect.module.css（前缀 vmo-） ----
 		// 注意：web 客户端热更新时 <head> 不会被重建，旧 <style> 标签会留存，
 		// 因此这里「存在则更新内容」而非「不存在才注入」，否则改样式不生效。
@@ -159,8 +182,8 @@ window.__ModuleLoader__.load({
 				".vmo-settings-error{color:var(--dsw-alias-state-error-primary);font-size:13px;padding:6px 8px;background:var(--dsw-alias-interactive-bg-hover-danger);border-radius:8px}",
 			/* 供应商分组头：大字号（参考官方 rowName 14px），箭头指示展开/收起 */
 			".vmo-provider-group{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:10px 12px;background:var(--dsw-alias-bg-primary)}",
-			".vmo-provider-group .zGbnIq_rowCard{background:var(--dsw-alias-bg-primary)}",
-			".vmo-provider-group .zGbnIq_modelEntry{background:var(--dsw-alias-bg-primary)}",
+			".vmo-provider-group ." + cssHash + "rowCard{background:var(--dsw-alias-bg-primary)}",
+			".vmo-provider-group ." + cssHash + "modelEntry{background:var(--dsw-alias-bg-primary)}",
 			".vmo-provider-head{display:flex;align-items:center;gap:8px;width:100%;padding:2px 0;border:none;background:transparent;color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px;cursor:pointer;text-align:left}",
 			".vmo-provider-head:hover{color:var(--dsw-alias-label-secondary)}",
 			".vmo-provider-chevron{flex:none;font-size:12px;color:var(--dsw-alias-label-tertiary);transition:transform 120ms ease;transform:rotate(-90deg);display:inline-flex}",
@@ -669,32 +692,32 @@ window.__ModuleLoader__.load({
 			);
 		};
 
-		// ---- 官方模型设置页的 CSS 类名映射（zGbnIq_* 已由官方 client 全局注入）----
+		// ---- 官方模型设置页的 CSS 类名映射（hash 已在工厂顶部运行时探测）----
 		// 直接复用官方样式类，Vision 设置页与官方「模型」页视觉完全一致。
 		var C = {
-			section: "zGbnIq_section", title: "zGbnIq_title", intro: "zGbnIq_intro",
-			notice: "zGbnIq_notice", savedNotice: "zGbnIq_savedNotice",
-			rows: "zGbnIq_rows", rowCard: "zGbnIq_rowCard", rowHead: "zGbnIq_rowHead",
-			rowIdentity: "zGbnIq_rowIdentity", rowName: "zGbnIq_rowName", rowTag: "zGbnIq_rowTag",
-			credentialDot: "zGbnIq_credentialDot", credentialDotConfigured: "zGbnIq_credentialDotConfigured",
-			credentialDotMissing: "zGbnIq_credentialDotMissing", rowActions: "zGbnIq_rowActions",
-			primaryButton: "zGbnIq_primaryButton", secondaryButton: "zGbnIq_secondaryButton",
-			dangerButton: "zGbnIq_dangerButton", editor: "zGbnIq_editor", editorHeader: "zGbnIq_editorHeader",
-			editorTitle: "zGbnIq_editorTitle", editorRoute: "zGbnIq_editorRoute",
-			field: "zGbnIq_field", fieldLabel: "zGbnIq_fieldLabel", linkButton: "zGbnIq_linkButton",
-			advancedHint: "zGbnIq_advancedHint", editorActions: "zGbnIq_editorActions",
-			addBlock: "zGbnIq_addBlock", addActions: "zGbnIq_addActions", addButton: "zGbnIq_addButton",
-			addCard: "zGbnIq_addCard", customized: "zGbnIq_customized", customizedSummary: "zGbnIq_customizedSummary",
-			customizedBody: "zGbnIq_customizedBody", modelCatalog: "zGbnIq_modelCatalog",
-			modelCatalogHeading: "zGbnIq_modelCatalogHeading", modelCatalogTitle: "zGbnIq_modelCatalogTitle",
-			modelCatalogMeta: "zGbnIq_modelCatalogMeta", modelList: "zGbnIq_modelList",
-			modelListHead: "zGbnIq_modelListHead", modelEntry: "zGbnIq_modelEntry", modelRow: "zGbnIq_modelRow",
-			iconButton: "zGbnIq_iconButton", iconButtonDanger: "zGbnIq_iconButtonDanger",
-			modelAdvanced: "zGbnIq_modelAdvanced", modelField: "zGbnIq_modelField", modelFieldLabel: "zGbnIq_modelFieldLabel",
-			modelEmpty: "zGbnIq_modelEmpty", addModelButton: "zGbnIq_addModelButton",
-			input: "zGbnIq_input", selectInput: "zGbnIq_selectInput", error: "zGbnIq_error",
-			fetchDialog: "zGbnIq_fetchDialog", candidateList: "zGbnIq_candidateList",
-			candidate: "zGbnIq_candidate", candidateLabel: "zGbnIq_candidateLabel", candidateId: "zGbnIq_candidateId",
+			section: cssHash+"section", title: cssHash+"title", intro: cssHash+"intro",
+			notice: cssHash+"notice", savedNotice: cssHash+"savedNotice",
+			rows: cssHash+"rows", rowCard: cssHash+"rowCard", rowHead: cssHash+"rowHead",
+			rowIdentity: cssHash+"rowIdentity", rowName: cssHash+"rowName", rowTag: cssHash+"rowTag",
+			credentialDot: cssHash+"credentialDot", credentialDotConfigured: cssHash+"credentialDotConfigured",
+			credentialDotMissing: cssHash+"credentialDotMissing", rowActions: cssHash+"rowActions",
+			primaryButton: cssHash+"primaryButton", secondaryButton: cssHash+"secondaryButton",
+			dangerButton: cssHash+"dangerButton", editor: cssHash+"editor", editorHeader: cssHash+"editorHeader",
+			editorTitle: cssHash+"editorTitle", editorRoute: cssHash+"editorRoute",
+			field: cssHash+"field", fieldLabel: cssHash+"fieldLabel", linkButton: cssHash+"linkButton",
+			advancedHint: cssHash+"advancedHint", editorActions: cssHash+"editorActions",
+			addBlock: cssHash+"addBlock", addActions: cssHash+"addActions", addButton: cssHash+"addButton",
+			addCard: cssHash+"addCard", customized: cssHash+"customized", customizedSummary: cssHash+"customizedSummary",
+			customizedBody: cssHash+"customizedBody", modelCatalog: cssHash+"modelCatalog",
+			modelCatalogHeading: cssHash+"modelCatalogHeading", modelCatalogTitle: cssHash+"modelCatalogTitle",
+			modelCatalogMeta: cssHash+"modelCatalogMeta", modelList: cssHash+"modelList",
+			modelListHead: cssHash+"modelListHead", modelEntry: cssHash+"modelEntry", modelRow: cssHash+"modelRow",
+			iconButton: cssHash+"iconButton", iconButtonDanger: cssHash+"iconButtonDanger",
+			modelAdvanced: cssHash+"modelAdvanced", modelField: cssHash+"modelField", modelFieldLabel: cssHash+"modelFieldLabel",
+			modelEmpty: cssHash+"modelEmpty", addModelButton: cssHash+"addModelButton",
+			input: cssHash+"input", selectInput: cssHash+"selectInput", error: cssHash+"error",
+			fetchDialog: cssHash+"fetchDialog", candidateList: cssHash+"candidateList",
+			candidate: cssHash+"candidate", candidateLabel: cssHash+"candidateLabel", candidateId: cssHash+"candidateId",
 		};
 		// API 协议清单（后端 /providers 提供；兜底常用值）
 		var protocolList = ["openai-completions", "openai-responses", "anthropic", "google-generative-ai", "bedrock-converse", "azure-openai-responses", "openrouter", "github-copilot", "cloudflare", "xai"];
