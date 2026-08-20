@@ -1400,12 +1400,14 @@ export function apply(ctx, entry) {
             return;
           }
           const levels = await supportedLevels({ provider, model });
-          const efforts = levels === null ? [] : [...levels].sort();
           const off = await trueOffSupported({ provider, model });
           // offSupported：真申报（true）/未申报（false）/未知（null）→按面值兜底
           const offSupported = off === null
             ? (levels === null ? true : levels.has('off'))
             : off;
+          // 展示档位：未真申报 off 时把赝品 off 从列表剔除，避免「档位里有 off 却不给关闭」的自相矛盾
+          let efforts = levels === null ? [] : [...levels].sort();
+          if (offSupported === false) efforts = efforts.filter((id) => id !== 'off');
           json(res, 200, { provider, model, efforts, offSupported });
         } catch (error) {
           ctx.logger.error('vision-opencode: /vision-opencode/reasoning-levels failed', error);
