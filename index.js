@@ -70,6 +70,8 @@ const Config = z.object({
   visionModels: z.array(VisionModelEntry).default([]),
   /** llm/stream 瀑布开关：false 时停用「发图自动转换」，只保留工具与选择器（稳定性逃生阀）。 */
   autoConvert: z.boolean().default(true),
+  /** 识图模型推理档位：空=提供方默认；off 关闭思考；minimal/low/medium/high/xhigh/max 递增。 */
+  reasoningEffort: z.string().default(''),
   /** 旧版/手动兼容路由；当前版本通常由适配器能力自动识别。 */
   mainProvider: z.string().default(''),
   /** 旧版/手动兼容模型列表；无需随当前主模型切换同步。 */
@@ -140,6 +142,7 @@ export function apply(ctx, entry) {
           }))
         : [],
       autoConvert: raw?.autoConvert !== false,
+      reasoningEffort: typeof raw?.reasoningEffort === 'string' ? raw.reasoningEffort.trim() : '',
       mainProvider: typeof raw?.mainProvider === 'string' ? raw.mainProvider.trim() : '',
       mainModels: Array.isArray(raw?.mainModels)
         ? raw.mainModels.filter((id) => typeof id === 'string' && id.length > 0)
@@ -512,12 +515,14 @@ export function apply(ctx, entry) {
       source: { kind: 'plugin', plugin: 'vision-opencode' },
     });
     const assembler = new BlockAssembler();
+    const effort = route.reasoningEffort?.trim();
     for await (const chunk of ctx.llm.stream({
       provider: route.provider,
       model: route.model,
       system: VISION_SYSTEM_PROMPT,
       messages: [message],
       temperature: 0.2,
+      ...(effort && effort.length > 0 ? { reasoningEffort: effort } : {}),
       signal,
       [BYPASS]: true,
     })) {
@@ -985,6 +990,13 @@ export function apply(ctx, entry) {
               json(res, 400, { error: 'provider and model strings are required' });
               return;
             }
+            // 识图模型推理档位：空=提供方默认；pi-ai 档位 off/minimal/low/medium/high/xhigh/max
+            const reasoningEffort = typeof body?.reasoningEffort === 'string' ? body.reasoningEffort.trim() : '';
+            const validEfforts = ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+            if (!validEfforts.includes(reasoningEffort)) {
+              json(res, 400, { error: `invalid reasoningEffort "${reasoningEffort}"` });
+              return;
+            }
             // 精确排除本插件管理的文本主路由，并校验候选模型确实声明了 image 输入。
             // 允许插件自管 visionModels 中的自定义模型（即使宿主 catalog 未标记 image）。
             let declaredVision = false;
@@ -1000,10 +1012,10 @@ export function apply(ctx, entry) {
               return;
             }
             if (settingsScope !== void 0) {
-              // 只更新识图模型，保留其余配置（autoConvert/mainProvider/mainModels）。
-              await settingsScope.replace({ ...options(), provider, model });
+              // 更新识图模型（及可选推理档位），保留其余配置（autoConvert/mainProvider/mainModels）。
+              await settingsScope.replace({ ...options(), provider, model, reasoningEffort });
             } else {
-              const next = { ...options(), provider, model };
+              const next = { ...options(), provider, model, reasoningEffort };
               current = () => next;
             }
             json(res, 200, publicOptions());
