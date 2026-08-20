@@ -1591,7 +1591,7 @@ window.__ModuleLoader__.load({
 				// footer 按钮也走官方：editorActions + secondaryButton / primaryButton，
 					// 与编辑器「添加提供方」dialog 完全一致；保持 picker 与编辑器的 footer 视觉同源。
 				var pickerFooter = createElement("div",{className:"vmo-modal-actions"},
-					createElement("label",{style:{display:"inline-flex",alignItems:"center",gap:"6px",fontSize:"13px",color:"var(--dsw-alias-label-secondary)",cursor:"pointer",marginRight:"auto"}},
+					createElement("label",{style:{display:"inline-flex",alignItems:"center",gap:"6px",fontSize:"13px",color:"var(--dsw-alias-label-secondary)",cursor:"pointer",flex:"1 1 auto",marginRight:"auto"}},
 						createElement("input",{type:"checkbox", checked:allChecked, disabled:picker.busy||pickerCandidates.length===0, onChange:toggleAll, style:{margin:0,width:"14px",height:"14px",accentColor:"var(--dsw-alias-button-primary-fill,var(--dsw-alias-state-success-primary))"}}),
 						createElement("span",null, allChecked ? "取消全选" : "全选")
 					),
