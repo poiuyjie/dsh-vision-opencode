@@ -222,6 +222,7 @@ window.__ModuleLoader__.load({
 			".vmo-provider-chevron{flex:none;font-size:12px;color:var(--dsw-alias-label-tertiary);transition:transform 120ms ease;transform:rotate(-90deg);display:inline-flex}",
 			".vmo-provider-groupOpen .vmo-provider-chevron{transform:rotate(0deg)}",
 			".vmo-provider-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+			".vmo-provider-custom-tag{flex:none;height:18px;padding:0 6px;margin-left:6px;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;display:inline-flex;align-items:center}",
 			".vmo-provider-count{margin-left:auto;flex:none;font-size:12px;font-weight:400;color:var(--dsw-alias-label-tertiary)}",
 				/* 弹窗表单 */
 				".vmo-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px}",
@@ -1269,6 +1270,9 @@ window.__ModuleLoader__.load({
 						createElement("button",{type:"button", className:"vmo-provider-head", "aria-expanded": _open, onClick:(function(p){ return function(){ toggleExpand(p); }; })(gProvider)},
 							createElement("span",{className:"vmo-provider-chevron"}, IconChevronDownOutline14 ? createElement(IconChevronDownOutline14,{size:12}) : "›"),
 							createElement("span",{className:"vmo-provider-name"}, gProvider),
+							!providers.some(function(p){ return p && p.provider===gProvider; })
+								? createElement("span",{className:"vmo-provider-custom-tag"}, "自定义")
+								: null,
 							createElement("span",{className:"vmo-provider-count"}, gModels.length + " 个模型")
 						),
 						createElement("button",{type:"button", className:"vmo-provider-head-edit", title:"编辑提供方及其所有模型", disabled:busy, onClick:(function(p, gms){ return function(){ openEditProvider(p, gms); }; })(gProvider, gModels)}, IconEditOutline16 ? createElement(IconEditOutline16,{size:12}) : null, " 编辑"),
