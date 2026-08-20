@@ -60,6 +60,9 @@ const VisionModelEntry = z.object({
   description: z.string().default(''),
   baseUrl: z.string().default(''),
   requestFormat: z.union([z.const('openai'), z.const('anthropic')]).default('openai'),
+  /** 该模型的推理策略：''=默认(跟随提供方)；'off'=关闭(提供方支持时生效)；
+   *  'forceOff'=强制关闭(实验：提供方未申报关闭档时，尝试直连网关发禁用参数，不保证成功) */
+  reasoning: z.string().default(''),
 });
 
 /** 识图模型配置 schema（settings 面板自动生成表单）。 */
@@ -72,6 +75,8 @@ const Config = z.object({
   autoConvert: z.boolean().default(true),
   /** 识图推理开关：false/缺省=关闭思考（默认）；true=开启（走提供方默认档位）。 */
   visionReasoning: z.boolean().default(false),
+  /** 可选：强制关闭（forceOff）直连网关时用的 API key；留空则尝试读进程环境 OPENCODE_GO_API_KEY。 */
+  apiKey: z.string().default('').hidden(),
   /** 旧版/手动兼容路由；当前版本通常由适配器能力自动识别。 */
   mainProvider: z.string().default(''),
   /** 旧版/手动兼容模型列表；无需随当前主模型切换同步。 */
@@ -139,10 +144,12 @@ export function apply(ctx, entry) {
             description: typeof e.description === 'string' ? e.description.trim() : '',
             baseUrl: typeof e.baseUrl === 'string' ? e.baseUrl.trim() : '',
             requestFormat: e.requestFormat === 'anthropic' ? 'anthropic' : 'openai',
+            reasoning: e.reasoning === 'off' ? 'off' : e.reasoning === 'forceOff' ? 'forceOff' : '',
           }))
         : [],
       autoConvert: raw?.autoConvert !== false,
       visionReasoning: raw?.visionReasoning === true,
+      apiKey: typeof raw?.apiKey === 'string' ? raw.apiKey.trim() : '',
       mainProvider: typeof raw?.mainProvider === 'string' ? raw.mainProvider.trim() : '',
       mainModels: Array.isArray(raw?.mainModels)
         ? raw.mainModels.filter((id) => typeof id === 'string' && id.length > 0)
@@ -499,35 +506,86 @@ export function apply(ctx, entry) {
     }
   }
 
-  /** 推理关闭时向适配器传它的"off"档位（pi-ai 为 'off'），并尊重模型能力：
-   *  模型明确声明了推理档位但不含 'off' 的（各家常叫 none/false/omit 不一），
-   *  就不传 reasoningEffort，退化为提供方默认而非报错。按路由缓存。 */
-  let visionEffortCache = null;
-  async function visionReasoningParam(route) {
-    // 开启（或缺省之外的显式 true）：不传 → 走提供方默认档位
-    if (route.visionReasoning === true) return void 0;
+  /** 缓存每个 provider/model 由适配器申报的推理档位集合（null=元数据不可用）。 */
+  let reasoningLevelsCache = null;
+  async function supportedLevels(route) {
     const key = route.provider + '\0' + route.model;
-    if (visionEffortCache !== null && visionEffortCache.key === key) {
-      // 缓存值统一归一化：'' → undefined（不传），避免把空字符串当档位发给适配器
-      return visionEffortCache.param === '' ? void 0 : visionEffortCache.param;
-    }
-    let param = 'off';
+    if (reasoningLevelsCache !== null && reasoningLevelsCache.key === key) return reasoningLevelsCache.levels;
+    let levels = null;
     try {
       const info = await ctx.llm.resolveModelInfo(route.provider, route.model);
       const efforts = info?.reasoning?.efforts;
-      if (Array.isArray(efforts) && efforts.length > 0 && !efforts.includes('off')) {
-        param = ''; // 有能力但关闭名不是 'off'：不确定命名则省略，保证请求不报错
-      }
-    } catch {
-      /* 元数据不可用时按 pi-ai 惯例用 'off' */
-    }
-    visionEffortCache = { key, param }; // param 可能为 ''，缓存命中时统一归一化
-    return param === '' ? void 0 : param;
+      if (Array.isArray(efforts)) levels = new Set(efforts);
+    } catch { /* 元数据不可用：levels=null */ }
+    reasoningLevelsCache = { key, levels };
+    return levels;
+  }
+  /** 活动模型条目的推理策略：''=默认(跟随)；'off'=关闭；'forceOff'=强制关闭(实验)。
+   *  不在自管列表里则回退全局 visionReasoning（true=''，否则='off'，保持旧默认=关闭）。 */
+  function activeStrategy(route) {
+    const entry = (route.visionModels || []).find((e) => e.provider === route.provider && e.model === route.model);
+    if (entry && (entry.reasoning === 'off' || entry.reasoning === 'forceOff')) return entry.reasoning;
+    return route.visionReasoning === true ? '' : 'off';
+  }
+  /** 经 harness 通道能表达的关闭档位：仅当适配器申报了 'off' 才传，否则不传（尽力而为，绝不传空串）。 */
+  async function visionReasoningParam(route, strategy) {
+    if (strategy !== 'off' && strategy !== 'forceOff') return void 0;
+    const levels = await supportedLevels(route);
+    return levels !== null && levels.has('off') ? 'off' : void 0;
+  }
+  /** 强制关闭直连（仅 opencode-go / OpenAI-completions）：带 reasoning_effort:'none'。
+   *  成功返回分析文本；任何失败返回 undefined，由调用方回退正常路径（UI 已提示不保证成功）。 */
+  async function callVisionForceOffDirect(ref, signal, question, route) {
+    try {
+      if (route.provider !== 'opencode-go') return void 0;
+      const apiKey = (typeof route.apiKey === 'string' && route.apiKey.length > 0)
+        ? route.apiKey
+        : (typeof process !== 'undefined' && process.env && process.env.OPENCODE_GO_API_KEY);
+      const bytes = ref && ref.bytes;
+      if (!apiKey || !bytes || (typeof bytes.byteLength === 'number' && bytes.byteLength === 0)) return void 0;
+      const mediaType = (ref && typeof ref.mediaType === 'string' && ref.mediaType) || 'image/png';
+      const b64 = Buffer.from(bytes).toString('base64');
+      const body = {
+        model: route.model,
+        max_tokens: 1024,
+        reasoning_effort: 'none',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: question !== void 0 && typeof question === 'string' && question.trim().length > 0
+              ? `请分析这张图片：${question.trim()}`
+              : '请详细分析这张图片的内容（中文）。' },
+            { type: 'image_url', image_url: { url: `data:${mediaType};base64,${b64}` } },
+          ],
+        }],
+      };
+      const resp = await fetch('https://opencode.ai/zen/go/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify(body),
+        signal,
+      });
+      if (!resp.ok) return void 0;
+      const data = await resp.json();
+      const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      const text = Array.isArray(content)
+        ? content.filter((b) => b && b.type === 'text').map((b) => b.text).join('')
+        : (typeof content === 'string' ? content : '');
+      return text.trim().length > 0 ? text.trim() : void 0;
+    } catch { return void 0; }
   }
 
   /** 单次识图子调用：组装带图消息 → 流式请求识图模型 → 返回纯文本。 */
   async function callVisionOnce(ref, signal, question) {
     const route = options();
+    // 强制关闭 + 提供方不支持 off 档 → 尝试直连网关发 reasoning_effort:'none'（不保证成功）
+    if (activeStrategy(route) === 'forceOff') {
+      const levels = await supportedLevels(route);
+      if (!(levels !== null && levels.has('off'))) {
+        const directText = await callVisionForceOffDirect(ref, signal, question, route);
+        if (directText !== void 0) return directText;
+      }
+    }
     const message = createUserMessage({
       content: [
         {
@@ -541,7 +599,7 @@ export function apply(ctx, entry) {
       source: { kind: 'plugin', plugin: 'vision-opencode' },
     });
     const assembler = new BlockAssembler();
-    const reasoningEffort = await visionReasoningParam(route);
+    const reasoningEffort = await visionReasoningParam(route, activeStrategy(route));
     for await (const chunk of ctx.llm.stream({
       provider: route.provider,
       model: route.model,
@@ -1101,6 +1159,7 @@ export function apply(ctx, entry) {
             const description = typeof body?.description === 'string' ? body.description.trim() : '';
             const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
             const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : 'openai';
+            const reasoning = body?.reasoning === 'off' ? 'off' : body?.reasoning === 'forceOff' ? 'forceOff' : '';
             let id = typeof body?.id === 'string' ? body.id.trim() : '';
             if (provider.length === 0 || model.length === 0) {
               json(res, 400, { error: 'provider and model are required' });
@@ -1116,7 +1175,7 @@ export function apply(ctx, entry) {
               json(res, 409, { error: `vision model "${provider}/${model}" already exists` });
               return;
             }
-            const entry = { id, provider, model, name, description, baseUrl, requestFormat };
+            const entry = { id, provider, model, name, description, baseUrl, requestFormat, reasoning };
             models.push(entry);
             if (settingsScope !== void 0) {
               await settingsScope.replace({ ...options(), visionModels: models });
@@ -1136,6 +1195,7 @@ export function apply(ctx, entry) {
             const description = typeof body?.description === 'string' ? body.description.trim() : '';
             const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
             const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : 'openai';
+            const reasoning = body?.reasoning === 'off' ? 'off' : body?.reasoning === 'forceOff' ? 'forceOff' : '';
             if (id.length === 0 || provider.length === 0 || model.length === 0) {
               json(res, 400, { error: 'id, provider and model are required' });
               return;
@@ -1150,7 +1210,7 @@ export function apply(ctx, entry) {
               json(res, 409, { error: `vision model "${provider}/${model}" already exists` });
               return;
             }
-            models[idx] = { id, provider, model, name, description, baseUrl, requestFormat };
+            models[idx] = { id, provider, model, name, description, baseUrl, requestFormat, reasoning };
             if (settingsScope !== void 0) {
               await settingsScope.replace({ ...options(), visionModels: models });
             } else {
@@ -1200,6 +1260,28 @@ export function apply(ctx, entry) {
         }
       },
     }), 'vision-opencode: vision-models route');
+    wctx.effect(() => wctx.webServer.register({
+      kind: 'exact',
+      path: '/vision-opencode/reasoning-levels',
+      handler: async (req, res) => {
+        try {
+          if (req.method !== 'GET') { res.writeHead(405); res.end(); return; }
+          const url = new URL(req.url ?? '/vision-opencode/reasoning-levels', 'http://127.0.0.1');
+          const provider = (url.searchParams.get('provider') ?? '').trim().slice(0, 256);
+          const model = (url.searchParams.get('model') ?? '').trim().slice(0, 256);
+          if (provider.length === 0 || model.length === 0) {
+            json(res, 400, { error: 'provider and model are required' });
+            return;
+          }
+          const levels = await supportedLevels({ provider, model });
+          const efforts = levels === null ? [] : [...levels].sort();
+          json(res, 200, { provider, model, efforts, offSupported: levels === null ? true : levels.has('off') });
+        } catch (error) {
+          ctx.logger.error('vision-opencode: /vision-opencode/reasoning-levels failed', error);
+          json(res, 500, { error: error?.message ?? String(error) });
+        }
+      },
+    }), 'vision-opencode: reasoning-levels route');
     wctx.effect(() => wctx.webServer.register({
       kind: 'exact',
       path: '/vision-opencode/uninstall',

@@ -99,6 +99,9 @@ window.__ModuleLoader__.load({
 			".vmo-settings-reasoning-copy{display:flex;flex-direction:column;gap:2px;min-width:0}",
 			".vmo-settings-reasoning-title{font-size:14px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-primary)}",
 			".vmo-settings-reasoning-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
+			".vmo-settings-reason-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l1)}",
+			".vmo-settings-reason-label{font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}",
+			".vmo-settings-reason-hint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}",
 				/* 加载失败条（官方 error 表面）+ 重试入口 */
 				".vmo-error{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:4px;padding:7px 8px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}",
 				".vmo-retry{flex:0 0 auto;padding:0;border:none;background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}",
@@ -781,21 +784,77 @@ window.__ModuleLoader__.load({
 				}).catch(function(e){ setBusy(false); showToast(String(e)); });
 			};
 
-			var setVisionReasoning = function(on){
-				if(busy || !config || typeof config.provider!=="string" || typeof config.model!=="string") return;
-				setBusy(true);
-				fetch("/vision-opencode/config",{method:"PUT", headers:{"content-type":"application/json"}, body: JSON.stringify({provider: config.provider, model: config.model, visionReasoning: on})})
-				.then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, body:j}; }); })
-				.then(function(res){
-					setBusy(false);
-					if(!res.ok){ showToast(res.body.error || ("设置失败 HTTP "+res.status)); return; }
-					setConfig(res.body);
-					showToast(on?"识图推理已开启（提供方默认档位）":"识图推理已关闭（更快 · 更省 token）");
-				}).catch(function(e){ setBusy(false); showToast(String(e)); });
-			};
-
 			var isSelected = function(vm){
 				return config && config.provider===vm.provider && config.model===vm.model;
+			};
+
+			// 每模型：提供方申报的推理档位（懒加载缓存）
+			var reasonInfoState = useState({});
+			var reasonInfo = reasonInfoState[0];
+			var setReasonInfo = reasonInfoState[1];
+			var reasonLoadingState = useState({});
+			var reasonLoading = reasonLoadingState[0];
+			var setReasonLoading = reasonLoadingState[1];
+			var ensureReasonInfo = function(vm){
+				if(!vm || reasonInfo[vm.provider+"/"+vm.model] || reasonLoading[vm.provider+"/"+vm.model]) return;
+				var k = vm.provider+"/"+vm.model;
+				var nl = {}; for(var i in reasonLoading) nl[i]=reasonLoading[i]; nl[k]=true; setReasonLoading(nl);
+				fetch("/vision-opencode/reasoning-levels?provider="+encodeURIComponent(vm.provider)+"&model="+encodeURIComponent(vm.model), {headers:{accept:"application/json"}})
+					.then(function(r){ return r.json().catch(function(){ return null; }); })
+					.then(function(j){
+						var n = {}; for(var x in reasonInfo) n[x]=reasonInfo[x];
+						if(j && Array.isArray(j.efforts)){
+							n[k]={ efforts: j.efforts, offSupported: !!j.offSupported };
+						} else {
+							n[k]={ efforts: [], offSupported: true };
+						}
+						setReasonInfo(n);
+						var n2 = {}; for(var y in reasonLoading) n2[y]=reasonLoading[y]; delete n2[k]; setReasonLoading(n2);
+					}).catch(function(){
+						var n = {}; for(var x in reasonInfo) n[x]=reasonInfo[x]; n[k]={ efforts:[], offSupported:true };
+						setReasonInfo(n);
+						var n2 = {}; for(var y in reasonLoading) n2[y]=reasonLoading[y]; delete n2[k]; setReasonLoading(n2);
+					});
+			};
+			// 每模型：保存推理策略
+			var updateReasoning = function(vm, value){
+				if(busy || !vm) return;
+				setBusy(true);
+				fetch("/vision-opencode/vision-models", {method:"PUT", headers:{"content-type":"application/json"}, body: JSON.stringify({id: vm.id, provider: vm.provider, model: vm.model, name: vm.name||"", description: vm.description||"", baseUrl: vm.baseUrl||"", requestFormat: vm.requestFormat||"openai", reasoning: value})})
+					.then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, body:j}; }); })
+					.then(function(res){
+						setBusy(false);
+						if(!res.ok){ showToast(res.body.error || ("保存失败 HTTP "+res.status)); return; }
+						setModels(res.body.models || []);
+						var label = value==="" ? "已设为默认（跟随提供方）" : value==="off" ? "已关闭思考（提供方支持时生效）" : "已设为强制关闭（实验，不保证成功）";
+						showToast(label);
+					}).catch(function(e){ setBusy(false); showToast(String(e)); });
+			};
+
+			// 每模型推理策略行：显示提供方申报的档位；有「关闭」档才提供关闭，
+			// 否则提供「强制关闭」（实验，不保证成功）
+			var buildReasonRow = function(vm){
+				var rkey = vm.provider+"/"+vm.model;
+				var rinfo = reasonInfo[rkey] || null;
+				var offOk = rinfo ? rinfo.offSupported : true;
+				var cur = vm.reasoning || "";
+				var opts = offOk ? [["","默认"],["off","关闭"]] : [["","默认"],["forceOff","强制关闭"]];
+				if(!rinfo){ setTimeout(function(){ ensureReasonInfo(vm); }, 0); }
+				var hint = rinfo && rinfo.efforts && rinfo.efforts.length > 0
+					? "提供方档位："+rinfo.efforts.join(", ")
+					: (rinfo ? "未申报档位" : "读取能力…");
+				if(!offOk) hint += " · 无「关闭」档，仅能尝试";
+				if(cur === "forceOff") hint += " · 不保证成功";
+				return createElement("div",{className:"vmo-settings-reason-row"},
+					createElement("span",{className:"vmo-settings-reason-label"},"推理"),
+					createElement("div",{className:"vmo-effort-seg", role:"radiogroup", "aria-label":"推理策略"},
+						opts.map(function(o){
+							var sel = cur === o[0];
+							return createElement("button",{key:o[0], type:"button", role:"radio", "aria-checked":sel, disabled: busy, className:"vmo-effort-seg-btn"+(sel?" is-on":""), onClick:(function(v,val){ return function(){ updateReasoning(v, val); }; })(vm, o[0])}, o[1]);
+						})
+					),
+					createElement("div",{className:"vmo-settings-reason-hint"}, hint)
+				);
 			};
 
 			var header = createElement("div",{className:"vmo-settings-head", style:{marginBottom:"0"} },
@@ -898,7 +957,8 @@ window.__ModuleLoader__.load({
 							createElement("span",{style:{marginRight:"12px"}}, vm.provider+"/"+vm.model),
 							vm.description ? createElement("span",null, vm.description) : null,
 							isSelected(vm) ? createElement("span",{style:{marginLeft:"8px",color:"var(--dsw-alias-state-success-primary)"}}, "· 当前选中") : null
-						)
+						),
+						buildReasonRow(vm)
 						));
 					}
 					var _open = isExpanded(gProvider);
@@ -1039,17 +1099,7 @@ window.__ModuleLoader__.load({
 
 			var toastEl = toast2 ? createElement("div",{style:{position:"fixed",left:"50%",top:"16px",transform:"translateX(-50%)",background:"var(--dsw-alias-bg-primary,#333)",color:"var(--dsw-alias-label-primary)",border:"1px solid var(--dsw-alias-border-l2)",padding:"8px 12px",borderRadius:"8px",fontSize:"13px",zIndex:10000,boxShadow:"var(--dsw-shadow-lv3)"}}, toast2) : null;
 
-			// 设置页：识图推理 开启/关闭（与 Vision 下拉里的开关同源，默认关闭）
-			var reasoningOn = config !== null && config !== undefined && config.visionReasoning === true;
-			var reasoningRow = createElement("div", { className: "vmo-effort vmo-settings-reasoning" },
-				createElement("div", { className: "vmo-settings-reasoning-copy" },
-					createElement("div", { className: "vmo-settings-reasoning-title" }, "识图推理"),
-					createElement("div", { className: "vmo-settings-reasoning-hint" }, "关闭时不思考，识图更快、更省 token。各模型是否真正支持「关闭」取决于提供方申报的能力。")),
-				createElement("div", { className: "vmo-effort-seg", role: "radiogroup", "aria-label": "识图模型推理开关" },
-					createElement("button", { type:"button", role:"radio", "aria-checked": reasoningOn, disabled: busy, className: "vmo-effort-seg-btn" + (reasoningOn ? " is-on" : ""), onClick: function(){ setVisionReasoning(true); } }, "开启"),
-					createElement("button", { type:"button", role:"radio", "aria-checked": !reasoningOn, disabled: busy, className: "vmo-effort-seg-btn" + (!reasoningOn ? " is-on" : ""), onClick: function(){ setVisionReasoning(false); } }, "关闭")));
-
-			var sectionChildren = [header, intro, reasoningRow];
+			var sectionChildren = [header, intro];
 			if (systemHint !== null) sectionChildren.push(systemHint);
 			sectionChildren.push(rowsEl, addBlock);
 			if (modalEl !== null) sectionChildren.push(modalEl);
