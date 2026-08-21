@@ -76,6 +76,10 @@ Very few models have a real "Off" entry; the rest show "Default / Force off" wit
 - Conversion fails / selector missing: usually no vision model picked or a version mismatch — check the browser console and file an issue
 - Text-only vs native multimodal routes are auto-distinguished; no config sync on provider/model switches
 
+## Development
+
+- **Always tag before pushing**: create and push a version tag for every push (e.g. `git tag v0.4.0 && git push origin v0.4.0`) so every remote update carries a traceable version marker.
+
 ## License
 
 MIT
