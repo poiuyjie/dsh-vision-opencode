@@ -71,6 +71,8 @@ const VisionModelEntry = z.object({
   provider: z.string(),
   model: z.string(),
   name: z.string().default(''),
+  /** 渠道级显示名称（provider 组显示名），与模型名 name 分离 */
+  displayName: z.string().default(''),
   description: z.string().default(''),
   baseUrl: z.string().default(''),
   requestFormat: z.union([z.const('openai'), z.const('openai-completions'), z.const('openai-responses'), z.const('anthropic')]).default('openai-completions'),
@@ -152,12 +154,13 @@ export function apply(ctx, entry) {
           && typeof e.id === 'string' && e.id.length > 0
           && typeof e.provider === 'string' && e.provider.length > 0
           && typeof e.model === 'string' && e.model.length > 0)
-          .map((e) => ({
-            id: e.id,
-            provider: String(e.provider).trim(),
-            model: String(e.model).trim(),
-            name: typeof e.name === 'string' ? e.name.trim() : '',
-            description: typeof e.description === 'string' ? e.description.trim() : '',
+.map((e) => ({
+	            id: e.id,
+	            provider: String(e.provider).trim(),
+	            model: String(e.model).trim(),
+	            name: typeof e.name === 'string' ? e.name.trim() : '',
+	            displayName: typeof e.displayName === 'string' ? e.displayName.trim() : '',
+	            description: typeof e.description === 'string' ? e.description.trim() : '',
             baseUrl: typeof e.baseUrl === 'string' ? e.baseUrl.trim() : '',
             requestFormat: e.requestFormat === 'anthropic' ? 'anthropic' : (e.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions'),
             reasoning: e.reasoning === 'off' ? 'off' : e.reasoning === 'forceOff' ? 'forceOff' : '',
@@ -241,6 +244,151 @@ export function apply(ctx, entry) {
     // 启动时迁移并还原旧版本的持久化图片闸门（幂等、尽力而为）
     void ensureGateOverrides();
   });
+
+  // ---- 自注册适配器：自定义提供方不写宿主配置，而是由插件直接注册 adapter ----
+  // 宿主 ctx.llm.registerAdapter 接受 provider 列表 + PiAiAdapter 实例；
+  // PiAiAdapter 复用 llm-pi-ai 的完整协议实现（SSE/reasoning/认证），
+  // 插件只构造 profiles Map（含 pi-ai 的 Provider 对象），不影响官方设置页。
+  let customAdapterHandle = null;
+  const PI_PROTOCOL_FACTORIES = {};
+  /**
+   * 收集所有自定义提供方（baseUrl 非空）的模型条目，按 provider 分组返回。
+   * 每项：{ provider, baseUrl, requestFormat, displayName, models: [{id,name}], apiKeyEnv }。
+   */
+  function collectCustomProviders() {
+    const vms = options().visionModels;
+    if (!Array.isArray(vms)) return [];
+    const groups = {};
+    for (const e of vms) {
+      if (typeof e.baseUrl !== 'string' || e.baseUrl.length === 0) continue;
+      const p = e.provider;
+      if (!groups[p]) groups[p] = { provider: p, baseUrl: e.baseUrl, requestFormat: e.requestFormat || 'openai-completions', displayName: p, models: [], apiKeyEnv: deriveKeyRef(p) };
+      groups[p].models.push({ id: e.model, name: e.name || e.model });
+    }
+    return Object.values(groups);
+  }
+  /** 派生凭据 ref：PROVIDER 大写化 + _API_KEY。 */
+  function deriveKeyRef(provider) {
+    return provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_') + '_API_KEY';
+  }
+  /**
+   * 解析一个提供方可用的凭据 ref 名（返回 null 表示无可用凭据）。
+   * 优先级：自己的 ref → 同 baseUrl 的其他渠道的 ref（网关共享 key 场景：
+   * 用户给 winterapi 网关存的 key 存在 WINTERAPI_API_KEY 下，插件里叫 s 的
+   * 渠道也走同一网关，理应复用同一个 key）。
+   */
+  async function resolveProviderKeyRef(provider, baseUrl) {
+    const credentials = ctx.get('credentials');
+    if (credentials === void 0 || typeof credentials.resolve !== 'function') return null;
+    const tryRef = async (ref) => {
+      try {
+        const hit = await credentials.resolve(ref);
+        return hit !== void 0 && typeof hit.value === 'string' && hit.value.length > 0 ? ref : null;
+      } catch { return null; }
+    };
+    const own = await tryRef(deriveKeyRef(provider));
+    if (own !== null) return own;
+    // 同 baseUrl 的其他渠道（含大小写/末尾斜杠归一），按创建顺序尝试
+    const vms = options().visionModels;
+    if (Array.isArray(vms)) {
+      const norm = (u) => (u || '').replace(/\/+$/, '');
+      const siblings = vms.filter((e) => typeof e.baseUrl === 'string'
+        && e.baseUrl.length > 0 && e.provider !== provider && norm(e.baseUrl) === norm(baseUrl));
+      for (const sib of siblings) {
+        const hit = await tryRef(deriveKeyRef(sib.provider));
+        if (hit !== null) return hit;
+      }
+    }
+    return null;
+  }
+  /** 异步初始化 pi-ai 协议工厂（首次使用）。 */
+  async function ensureProtocolFactories() {
+    if (Object.keys(PI_PROTOCOL_FACTORIES).length > 0) return;
+    try {
+      const [oc, or, am] = await Promise.all([
+        import('@earendil-works/pi-ai/api/openai-completions.lazy').catch(() => null),
+        import('@earendil-works/pi-ai/api/openai-responses.lazy').catch(() => null),
+        import('@earendil-works/pi-ai/api/anthropic-messages.lazy').catch(() => null),
+      ]);
+      if (oc) PI_PROTOCOL_FACTORIES['openai-completions'] = oc.openAICompletionsApi;
+      if (or) PI_PROTOCOL_FACTORIES['openai-responses'] = or.openAIResponsesApi;
+      if (am) PI_PROTOCOL_FACTORIES['anthropic-messages'] = am.anthropicMessagesApi;
+    } catch (e) {
+      ctx.logger.warn('vision-opencode: 无法加载 pi-ai 协议工厂，自定义提供方将不可用', e);
+    }
+  }
+  /**
+   * 注册/更新/注销插件的自定义提供方 adapter。
+   * 每次 visionModels 变化后调用（启动时、POST/PUT/DELETE 后）。
+   */
+  async function syncCustomAdapter() {
+    try {
+      const groups = collectCustomProviders();
+      if (groups.length === 0) {
+        // 没有自定义提供方 → 注销已有 adapter
+        if (customAdapterHandle) { customAdapterHandle(); customAdapterHandle = null; }
+        return;
+      }
+      const [piAiMod, piMod] = await Promise.all([
+        import('@deepseek-ai/dsh-llm-pi-ai').catch(() => null),
+        import('@earendil-works/pi-ai').catch(() => null),
+      ]);
+      if (!piAiMod || !piMod) { ctx.logger.warn('vision-opencode: 缺少 llm-pi-ai/pi-ai 模块，自定义提供方无法注册 adapter'); return; }
+      const { PiAiAdapter } = piAiMod;
+      const { createProvider } = piMod;
+      await ensureProtocolFactories();
+      const profiles = new Map();
+      // 宿主已注册的 provider 列表：同名渠道用官方的 adapter，插件不重复注册（否则 DUPLICATE_ADAPTER）
+      const hostProviders = new Set();
+      try { for (const p of ctx.llm.listProviders()) hostProviders.add(p.id); } catch { /* 读不到就不跳过 */ }
+      for (const g of groups) {
+        if (hostProviders.has(g.provider)) {
+          ctx.logger.info(`vision-opencode: provider "${g.provider}" 已有宿主 adapter，插件不重复注册（该渠道走宿主路由）`);
+          continue;
+        }
+        const proto = g.requestFormat === 'anthropic' ? 'anthropic-messages' : (g.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions');
+        const factory = PI_PROTOCOL_FACTORIES[proto];
+        if (!factory) { ctx.logger.warn(`vision-opencode: 协议 "${proto}" 无可用实现，跳过 provider "${g.provider}"`); continue; }
+        // 凭据 ref：自己的派生名优先，解析不到时复用同 baseUrl 其他渠道的 key（网关共享）
+        const keyRef = await resolveProviderKeyRef(g.provider, g.baseUrl);
+        const piModels = g.models.map((m) => ({
+          id: m.id, name: m.name, api: proto, provider: g.provider, baseUrl: g.baseUrl,
+          input: ['text', 'image'], contextWindow: 262144, maxTokens: 32768,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        }));
+        const piProvider = createProvider({
+          id: g.provider, name: g.displayName, baseUrl: g.baseUrl,
+          auth: { apiKey: { name: g.displayName, resolve: async ({ credential }) => ({ auth: credential?.key === void 0 ? {} : { apiKey: credential.key }, source: g.displayName }) } },
+          models: piModels,
+          api: factory(),
+        });
+        profiles.set(g.provider, {
+          provider: g.provider, displayName: g.displayName, streamIdleTimeoutMs: 300000,
+          ...(keyRef !== null ? { apiKeyEnv: keyRef } : {}), configuredMaxTokens: new Map(), piProvider,
+        });
+      }
+      if (profiles.size === 0) {
+        if (customAdapterHandle) { customAdapterHandle(); customAdapterHandle = null; }
+        return;
+      }
+      const resolveApiKey = async (provider, profile) => {
+        const ref = profile.apiKeyEnv;
+        if (ref === void 0) return void 0;
+        const credentials = ctx.get('credentials');
+        const hit = credentials !== void 0 ? (await credentials.resolve(ref))?.value : void 0;
+        return hit !== void 0 && hit.length > 0 ? hit : void 0;
+      };
+      // 每次重建 adapter + 注销重注册：PiAiAdapter 的 profiles 闭包不可替换，
+      // replace() 只换路由名，模型增删会因旧闭包不生效
+      if (customAdapterHandle) { customAdapterHandle(); customAdapterHandle = null; }
+      const adapter = new PiAiAdapter({ profiles: () => profiles, resolveApiKey, resolveAttachments: () => ctx.get('attachments') });
+      customAdapterHandle = ctx.llm.registerAdapter([...profiles.keys()], adapter);
+    } catch (error) {
+      ctx.logger.warn('vision-opencode: 自定义提供方 adapter 注册失败', error);
+    }
+  }
+  // 启动时注册现有自定义提供方
+  syncCustomAdapter().catch(() => {});
 
   // ---- 结构性拦截：执行前拒绝内置 read_image，防止真实图片进入纯文本主模型上下文 ----
   // 背景：运行时兼容层会让配置的纯文本主模型临时声明“支持图片输入”，
@@ -667,7 +815,7 @@ export function apply(ctx, entry) {
     { key: 'REASONING_EFFORT_NONE', patch: { reasoning_effort: 'none' } },
     { key: 'ENABLE_THINKING_FALSE', patch: { enable_thinking: false } },
   ];
-  let forceOffWinning = null; // { route, candKey }
+  let forceOffProbe = null; // { route, index, done, winnerKey, lastTextKey }
   async function callVisionForceOffDirect(ref, signal, question, route) {
     try {
       if (route.provider !== 'opencode-go') return void 0;
@@ -688,14 +836,22 @@ export function apply(ctx, entry) {
         ],
       };
       const routeKey = route.provider + '\0' + route.model;
-      // 已为这个模型实测出生效的关闭参数 → 快路径，直接复用
-      let order = FORCE_OFF_CANDIDATES;
-      if (forceOffWinning !== null && forceOffWinning.route === routeKey) {
-        const winCand = FORCE_OFF_CANDIDATES.find((c) => c.key === forceOffWinning.candKey);
-        if (winCand !== void 0) order = [winCand];
+      // 试探进度：每次识别从当前 index 的候选开始。拿到文本即返回（不再同一次内
+      // 重试）——识图结果已到手，关不关思考下次再试；只有「没拿到文本」（参数被拒/
+      // 空响应）才快速顺延下一个候选。
+      let idx = 0;
+      if (forceOffProbe !== null && forceOffProbe.route === routeKey) {
+        if (forceOffProbe.done) {
+          // 已终结：winner 固定复用；没有 winner（全试过没关掉）则固定用最后出文本的候选
+          const fixedKey = forceOffProbe.winnerKey ?? forceOffProbe.lastTextKey;
+          const fixed = FORCE_OFF_CANDIDATES.find((c) => c.key === fixedKey);
+          idx = fixed !== void 0 ? FORCE_OFF_CANDIDATES.indexOf(fixed) : 0;
+        } else {
+          idx = forceOffProbe.index;
+        }
       }
-      let bestText = void 0;
-      for (const cand of order) {
+      for (; idx < FORCE_OFF_CANDIDATES.length; idx++) {
+        const cand = FORCE_OFF_CANDIDATES[idx];
         const body = Object.assign({ model: route.model, max_tokens: 1024, messages: [baseMessage] }, cand.patch);
         let resp;
         try {
@@ -706,7 +862,7 @@ export function apply(ctx, entry) {
             signal,
           });
         } catch { continue; }
-        if (!resp.ok) continue; // 该参数厂商不认 → 换一个
+        if (!resp.ok) continue; // 该参数厂商不认 → 本次内快速顺延下一个
         let data;
         try { data = await resp.json(); } catch { continue; }
         const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
@@ -718,19 +874,20 @@ export function apply(ctx, entry) {
         const rt = (typeof usage.reasoning_tokens === 'number' ? usage.reasoning_tokens
           : (usage.completion_tokens_details && typeof usage.completion_tokens_details.reasoning_tokens === 'number'
             ? usage.completion_tokens_details.reasoning_tokens : void 0));
-        if (typeof bestText !== 'string') bestText = text.trim();
-        if (rt === 0) {
-          forceOffWinning = { route: routeKey, candKey: cand.key }; // 真关了 → 记忆
+        if (rt === 0 || rt === void 0) {
+          // 真关了（或厂商没报，无法确认但更可能已关）→ 终结并记忆该参数，后续固定复用
+          forceOffProbe = { route: routeKey, index: 0, done: true, winnerKey: cand.key, lastTextKey: cand.key };
           return text.trim();
         }
-        if (rt === void 0) {
-          // 厂商没报 reasoning_tokens：无法确认但更可能已关 → 采用并记忆
-          forceOffWinning = { route: routeKey, candKey: cand.key };
-          return text.trim();
-        }
-        // rt>0：这参数没关掉思考 → 试下一个
+        // rt>0：成功拿到文本但没关掉思考 → 本次到此为止，把进度推进到下一个候选，
+        // 下一次识别再试（试探成本摊到多次识别，单次最多一次完整推理）
+        const next = idx + 1;
+        forceOffProbe = next >= FORCE_OFF_CANDIDATES.length
+          ? { route: routeKey, index: 0, done: true, winnerKey: null, lastTextKey: cand.key }
+          : { route: routeKey, index: next, done: false, winnerKey: null, lastTextKey: cand.key };
+        return text.trim();
       }
-      return bestText; // 全试过：至少一个成功拿到文本 → 尽力而为；全失败 → undefined
+      return void 0; // 全部候选都被拒/无文本：本次识别失败（下次从记忆进度继续）
     } catch { return void 0; }
   }
 
@@ -1247,6 +1404,10 @@ export function apply(ctx, entry) {
               json(res, 400, { error: 'provider and model strings are required' });
               return;
             }
+            if (!/^[a-z][a-z0-9-]*$/.test(provider)) {
+              json(res, 400, { error: 'provider must start with a lowercase letter and contain only lowercase letters, digits and hyphens (e.g. acme-gateway)' });
+              return;
+            }
             // 识图推理开关：true=开启（提供方默认档位）；false/缺省=关闭思考
             const visionReasoning = body?.visionReasoning === true;
             // 精确排除本插件管理的文本主路由，并校验候选模型确实声明了 image 输入。
@@ -1306,8 +1467,17 @@ export function apply(ctx, entry) {
           } catch (error) {
             /* 显示名缺失时退回 provider id */
           }
+          // 插件渠道级显示名称（displayName）优先于 adapter 名：用户更新显示名称后
+          // 聊天框选择器的分组名应同步变化
+          const displayOf = {};
+          for (const entry of configured) {
+            if (entry && typeof entry.provider === 'string' && typeof entry.displayName === 'string'
+              && entry.displayName.length > 0 && displayOf[entry.provider] === void 0) {
+              displayOf[entry.provider] = entry.displayName;
+            }
+          }
           for (const providerId of Object.keys(byProvider).sort()) {
-            groups.push({ provider: providerId, name: nameOf[providerId] || providerId, models: byProvider[providerId] });
+            groups.push({ provider: providerId, name: displayOf[providerId] || nameOf[providerId] || providerId, models: byProvider[providerId] });
           }
           // 系统全部图片模型（设置页「一键导入」用）。
           const systemGroups = [];
@@ -1436,9 +1606,16 @@ export function apply(ctx, entry) {
             const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
             const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : (body?.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions');
             const reasoning = body?.reasoning === 'off' ? 'off' : body?.reasoning === 'forceOff' ? 'forceOff' : '';
+            const displayName = typeof body?.displayName === 'string' ? body.displayName.trim() : '';
             let id = typeof body?.id === 'string' ? body.id.trim() : '';
             if (provider.length === 0 || model.length === 0) {
               json(res, 400, { error: 'provider and model are required' });
+              return;
+            }
+            // provider 名须为宿主可注册的 route 键（小写字母开头，仅小写字母/数字/连字符）：
+            // 非法名（如数字开头）在凭据写入与运行期都会被宿主拒绝（invalid payload / NO_ADAPTER）
+            if (!/^[a-z][a-z0-9-]*$/.test(provider)) {
+              json(res, 400, { error: 'provider must start with a lowercase letter and contain only lowercase letters, digits and hyphens (e.g. acme-gateway)' });
               return;
             }
             if (id.length === 0) id = `${provider}__${model}__${Date.now().toString(36)}`;
@@ -1451,7 +1628,7 @@ export function apply(ctx, entry) {
               json(res, 409, { error: `vision model "${provider}/${model}" already exists` });
               return;
             }
-            const entry = { id, provider, model, name, description, baseUrl, requestFormat, reasoning };
+            const entry = { id, provider, model, name, displayName, description, baseUrl, requestFormat, reasoning };
             models.push(entry);
             if (settingsScope !== void 0) {
               await settingsScope.replace({ ...options(), visionModels: models });
@@ -1459,6 +1636,8 @@ export function apply(ctx, entry) {
               const next = { ...options(), visionModels: models };
               current = () => next;
             }
+            // 自定义提供方（带 baseUrl）注册到宿主 adapter（不写 llm-pi-ai 配置）
+            if (baseUrl.length > 0) await syncCustomAdapter();
             json(res, 201, { models: options().visionModels, created: entry });
             return;
           }
@@ -1473,8 +1652,13 @@ export function apply(ctx, entry) {
                 json(res, 400, { error: 'provider is required' });
                 return;
               }
+              if (!/^[a-z][a-z0-9-]*$/.test(provider)) {
+                json(res, 400, { error: 'provider must start with a lowercase letter and contain only lowercase letters, digits and hyphens (e.g. acme-gateway)' });
+                return;
+              }
               const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
               const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : (body?.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions');
+              const displayName = typeof body?.displayName === 'string' ? body.displayName.trim() : '';
               const want = body.models
                 .filter((m) => m !== null && typeof m === 'object' && typeof m?.id === 'string' && m.id.trim().length > 0)
                 .map((m) => ({
@@ -1500,10 +1684,10 @@ export function apply(ctx, entry) {
                 }
                 if (existing !== null && !used.has(existing.id)) {
                   used.add(existing.id);
-                  next.push({ ...existing, model: m.model, name: m.name, baseUrl, requestFormat });
+                  next.push({ ...existing, model: m.model, name: m.name, displayName, baseUrl, requestFormat });
                 } else if (existing === null) {
                   const freshId = `${provider}__${m.model}__${Date.now().toString(36)}_${next.length}`;
-                  next.push({ id: freshId, provider, model: m.model, name: m.name, description: '', baseUrl, requestFormat, reasoning: '' });
+                  next.push({ id: freshId, provider, model: m.model, name: m.name, displayName, description: '', baseUrl, requestFormat, reasoning: '' });
                 }
                 // existing 已被占用（同一模型重复出现）：跳过以保持唯一
               }
@@ -1514,6 +1698,8 @@ export function apply(ctx, entry) {
                 const nextCfg = { ...options(), visionModels: all };
                 current = () => nextCfg;
               }
+              // 自定义提供方（带 baseUrl）随批量编辑重新注册到宿主 adapter
+              if (baseUrl.length > 0) await syncCustomAdapter();
               json(res, 200, { models: options().visionModels, updated: next });
               return;
             }
@@ -1521,12 +1707,17 @@ export function apply(ctx, entry) {
             const provider = typeof body?.provider === 'string' ? body.provider.trim() : '';
             const model = typeof body?.model === 'string' ? body.model.trim() : '';
             const name = typeof body?.name === 'string' ? body.name.trim() : '';
+            const displayName = typeof body?.displayName === 'string' ? body.displayName.trim() : '';
             const description = typeof body?.description === 'string' ? body.description.trim() : '';
             const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
             const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : (body?.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions');
             const reasoning = body?.reasoning === 'off' ? 'off' : body?.reasoning === 'forceOff' ? 'forceOff' : '';
             if (id.length === 0 || provider.length === 0 || model.length === 0) {
               json(res, 400, { error: 'id, provider and model are required' });
+              return;
+            }
+            if (!/^[a-z][a-z0-9-]*$/.test(provider)) {
+              json(res, 400, { error: 'provider must start with a lowercase letter and contain only lowercase letters, digits and hyphens (e.g. acme-gateway)' });
               return;
             }
             const models = [...options().visionModels];
@@ -1539,7 +1730,7 @@ export function apply(ctx, entry) {
               json(res, 409, { error: `vision model "${provider}/${model}" already exists` });
               return;
             }
-            models[idx] = { id, provider, model, name, description, baseUrl, requestFormat, reasoning };
+            models[idx] = { id, provider, model, name, displayName, description, baseUrl, requestFormat, reasoning };
             if (settingsScope !== void 0) {
               await settingsScope.replace({ ...options(), visionModels: models });
             } else {
@@ -1572,6 +1763,8 @@ export function apply(ctx, entry) {
               } else {
                 current = () => nextCfg;
               }
+              // 自定义提供方随删除从宿主 adapter 注销
+              await syncCustomAdapter();
               json(res, 200, { models: options().visionModels, removed: before - nextModels.length });
               return;
             }
@@ -1596,6 +1789,8 @@ export function apply(ctx, entry) {
             } else {
               current = () => nextCfg;
             }
+            // 自定义提供方随模型删除重新注册（剩余条目变化会自动反映到 adapter）
+            await syncCustomAdapter();
             json(res, 200, { models: options().visionModels });
             return;
           }
@@ -1636,6 +1831,59 @@ export function apply(ctx, entry) {
         }
       },
     }), 'vision-opencode: reasoning-levels route');
+    wctx.effect(() => wctx.webServer.register({
+      kind: 'exact',
+      path: '/vision-opencode/discover-models',
+      handler: async (req, res) => {
+        try {
+          if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+          const body = await readJsonBody(req);
+          const provider = typeof body?.provider === 'string' ? body.provider.trim() : '';
+          const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : '';
+          const requestFormat = body?.requestFormat === 'anthropic' ? 'anthropic' : (body?.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions');
+          const keyDraft = typeof body?.keyDraft === 'string' ? body.keyDraft.trim() : '';
+          if (provider.length === 0) {
+            json(res, 400, { error: 'provider is required' });
+            return;
+          }
+          // baseUrl 仅自定义渠道必填：内置提供方（opencode-go 等）走 pi-ai 目录捷径不需要地址，
+          // 宿主 discoverModels 会在 provider 不在目录且无 baseURL 时报错（届时透传该错误）
+          // 密钥：优先用表单草稿；编辑已有提供方时草稿为空 → 从凭据服务复用已有 key
+          // （自己的 ref 优先，解析不到时复用同 baseUrl 其他渠道的 key）
+          let apiKey = keyDraft;
+          let keySource = 'draft';
+          if (apiKey.length === 0) {
+            try {
+              const keyRef = await resolveProviderKeyRef(provider, baseUrl);
+              if (keyRef !== null) {
+                const credentials = ctx.get('credentials');
+                const hit = credentials !== void 0 ? (await credentials.resolve(keyRef)) : void 0;
+                if (hit !== void 0 && typeof hit.value === 'string' && hit.value.length > 0) {
+                  apiKey = hit.value;
+                  keySource = hit.source ?? 'file';
+                }
+              }
+            } catch { /* 无凭据 → 不带 key 探测 */ }
+          }
+          ctx.logger.info(`vision-opencode: discover-models provider=${provider} baseUrl=${baseUrl} api=${requestFormat} keyResolved=${apiKey.length > 0} keySource=${keySource} keyLen=${apiKey.length}`);
+          const llm = ctx.get('llm');
+          if (!llm || typeof llm.discoverModels !== 'function') {
+            json(res, 400, { error: 'llm discovery unavailable' });
+            return;
+          }
+          const models = await llm.discoverModels('llm-pi-ai', {
+            provider,
+            baseURL: baseUrl,
+            api: requestFormat,
+            ...(apiKey.length > 0 ? { apiKey } : {}),
+          });
+          json(res, 200, { models });
+        } catch (error) {
+          ctx.logger.error('vision-opencode: /vision-opencode/discover-models failed', error);
+          json(res, 500, { error: error?.message ?? String(error) });
+        }
+      },
+    }), 'vision-opencode: discover-models route');
     wctx.effect(() => wctx.webServer.register({
       kind: 'exact',
       path: '/vision-opencode/uninstall',

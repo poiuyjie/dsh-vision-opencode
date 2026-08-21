@@ -156,7 +156,8 @@ window.__ModuleLoader__.load({
 			".vmo-settings-reasoning-copy{display:flex;flex-direction:column;gap:2px;min-width:0}",
 			".vmo-settings-reasoning-title{font-size:14px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-primary)}",
 			".vmo-settings-reasoning-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
-			".vmo-settings-reason-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l1)}",
+			".vmo-settings-reason-block{display:flex;flex-direction:column;gap:4px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l1)}",
+			".vmo-settings-reason-row{display:flex;align-items:center;gap:10px}",
 			".vmo-settings-reason-label{font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}",
 			".vmo-settings-reason-hint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}",
 				/* 加载失败条（官方 error 表面）+ 重试入口 */
@@ -222,7 +223,7 @@ window.__ModuleLoader__.load({
 			".vmo-provider-chevron{flex:none;font-size:12px;color:var(--dsw-alias-label-tertiary);transition:transform 120ms ease;transform:rotate(-90deg);display:inline-flex}",
 			".vmo-provider-groupOpen .vmo-provider-chevron{transform:rotate(0deg)}",
 			".vmo-provider-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
-			".vmo-provider-custom-tag{flex:none;height:18px;padding:0 6px;margin-left:6px;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;display:inline-flex;align-items:center}",
+			".vmo-provider-custom-tag{flex:none;height:18px;padding:0 6px;margin-left:6px;border:1px solid var(--dsw-alias-border-l2);border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;display:inline-flex;align-items:center}",
 			".vmo-provider-count{margin-left:auto;flex:none;font-size:12px;font-weight:400;color:var(--dsw-alias-label-tertiary)}",
 				/* 弹窗表单 */
 				".vmo-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px}",
@@ -234,7 +235,7 @@ window.__ModuleLoader__.load({
 ".vmo-input option,.vmo-input optgroup{background:var(--dsw-specific-menu,var(--dsw-alias-bg-primary));color:var(--dsw-alias-label-primary)}",
 ".vmo-input::placeholder{color:var(--dsw-alias-label-tertiary);opacity:1}",
 ".vmo-input:focus{border-color:var(--dsw-alias-border-l3);box-shadow:0 0 0 2px var(--dsw-alias-border-l3)}",
-				".vmo-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}",
+				".vmo-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:4px;width:100%}",
 				".vmo-btn-primary{height:36px;padding:0 14px;border-radius:18px;border:none;background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);font-size:14px;cursor:pointer}",
 				".vmo-btn-primary:disabled{opacity:0.4;cursor:default}",
 				".vmo-btn-secondary{height:36px;padding:0 14px;border-radius:18px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-primary);font-size:14px;cursor:pointer}",
@@ -648,12 +649,13 @@ window.__ModuleLoader__.load({
 			// 内联分段控件，无弹出层，不会与上面的模型列表重叠；深浅色跟随 shell 令牌
 			menuChildren.push(createElement("div", { key: "effort", className: "vmo-effort" },
 				createElement("span", { className: "vmo-effort-label" }, "推理"),
-				createElement("div", { className: "vmo-effort-seg", role: "radiogroup", "aria-label": "识图模型推理开关", title: reasoningOn ? "开启：识图时让模型思考（提供方默认档位）" : "关闭：识图不思考，更快更省 token" },
+				createElement("div", { className: "vmo-effort-seg", role: "radiogroup", "aria-label": "识图模型推理开关" },
 					createElement("button", {
 						type: "button",
 						role: "radio",
 						"aria-checked": reasoningOn,
 						disabled: busy,
+						title: "开启：识图时让模型思考（提供方默认档位）",
 						className: "vmo-effort-seg-btn" + (reasoningOn ? " is-on" : ""),
 						onClick: function() { setEffort(true); }
 					}, "开启"),
@@ -662,6 +664,7 @@ window.__ModuleLoader__.load({
 						role: "radio",
 						"aria-checked": !reasoningOn,
 						disabled: busy,
+						title: "关闭：识图不思考，更快更省 token",
 						className: "vmo-effort-seg-btn" + (!reasoningOn ? " is-on" : ""),
 						onClick: function() { setEffort(false); }
 					}, "关闭"))))
@@ -755,51 +758,58 @@ window.__ModuleLoader__.load({
 		};
 		// API 协议清单（后端 /providers 提供；兜底常用值）
 		var protocolList = ["openai-completions", "openai-responses", "anthropic", "google-generative-ai", "bedrock-converse", "azure-openai-responses", "openrouter", "github-copilot", "cloudflare", "xai"];
-		// 复用官方「获取可用模型」：走 connection.api.llm.discoverModels。
-		// modal 为当前表单数据；onCandidates(fresh[]) 拿到可用模型列表后由调用方打开弹窗；
-		// showToast 提示；api 为 connection.api。
-		var fetchModelsFromProvider = function(modal, onCandidates, showToast, api) {
-			if(!api || typeof api.llm!=="object" || typeof api.llm.discoverModels!=="function"){
-				showToast("获取模型不可用（缺少 connection.api）");
-				return;
-			}
-			var provider = modal.data.provider || "";
-			var baseURL = modal.data.baseUrl || "";
-			var requestFormat = modal.data.requestFormat || "";
-			var keyDraft = modal.keyDraft || "";
-			var probe = { settingsNs: "llm-pi-ai" };
-			if(provider) probe.provider = provider;
-			if(baseURL) probe.baseURL = baseURL;
-			if(requestFormat) probe.api = requestFormat;
-			if(keyDraft) probe.apiKey = keyDraft;
-			api.llm.discoverModels(probe).then(function(response){
-				if(!response || !response.result){
-					showToast("获取模型响应无效");
-					return;
-				}
-				if(!response.result.ok){
-					showToast(response.result.error && response.result.error.message ? response.result.error.message : "获取模型失败");
-					return;
-				}
-				var found = response.result.value.models;
-				if(!Array.isArray(found) || found.length===0){
-					showToast("该提供方没有列出任何模型，请手动添加。");
-					return;
-				}
-				var known = Array.isArray(modal.models) ? modal.models.map(function(m){ return m.id; }) : [];
-				var fresh = [];
-				for(var i=0;i<found.length;i++){
-					var c = found[i];
-					if(!c || typeof c.id!=="string" || known.indexOf(c.id)>=0) continue;
-					var entry = { id: c.id };
-					if(typeof c.name==="string" && c.name.length>0) entry.name = c.name;
-					fresh.push(entry);
-				}
-				if(typeof onCandidates==="function") onCandidates(fresh);
-			}).catch(function(e){
-				showToast(e && e.message ? e.message : String(e));
-			});
-		};
+// 获取可用模型：走插件后端代理 /vision-opencode/discover-models。
+			// 后端在凭据服务有完整访问权限——编辑已有提供方时 keyDraft 为空，
+			// 后端会从凭据服务复用已有 key（客户端 API 面不暴露凭据值）。
+			// modal 为当前表单数据；onCandidates(fresh[]) 拿到可用模型列表后由调用方打开弹窗；
+			// showToast 提示；api 参数保留（不再使用，仅兼容已有调用方签名）。
+			var fetchModelsFromProvider = function(modal, keyDraft, onCandidates, showToast, api, onError, isBuiltinProvider) {
+				var provider = modal.data.provider || "";
+				var baseURL = modal.data.baseUrl || "";
+				var requestFormat = modal.data.requestFormat || "";
+				if(requestFormat === "openai") requestFormat = "openai-completions";
+				// 内置提供方（opencode-go 等）的模型在 pi-ai 目录里，探测走目录捷径不需要地址。
+				// isBuiltinProvider 由调用方（组件内）计算传入——本函数在组件外，拿不到 providers state
+				if(!provider || (!baseURL && !isBuiltinProvider)){
+						showToast("缺少提供方或 API 地址");
+						if(typeof onError==="function") onError();
+						return;
+					}
+					// 超时兜底：后端挂起时也能结束 loading 状态（AbortController 中止 fetch）
+					var ctrl = typeof AbortController!=="undefined" ? new AbortController() : null;
+					var timer = ctrl ? setTimeout(function(){ ctrl.abort(); }, 15000) : null;
+					var done = function(){ if(timer){ clearTimeout(timer); timer = null; } };
+					fetch("/vision-opencode/discover-models",{method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({provider, baseUrl: baseURL, requestFormat, keyDraft: keyDraft || ""}), ...(ctrl ? {signal: ctrl.signal} : {})})
+					.then(function(r){ return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
+					.then(function(res){
+						done();
+						if(!res.ok){ showToast(res.body.error || "获取模型失败"); if(typeof onError==="function") onError(); return; }
+						var found = res.body.models;
+						if(!Array.isArray(found) || found.length===0){
+							showToast("该提供方没有列出任何模型，请手动添加。");
+							if(typeof onError==="function") onError();
+							return;
+						}
+						var known = Array.isArray(modal.models) ? modal.models.map(function(m){ return m.id; }) : [];
+						var fresh = [];
+						for(var i=0;i<found.length;i++){
+							var c = found[i];
+							if(!c || typeof c.id!=="string" || known.indexOf(c.id)>=0) continue;
+							var entry = { id: c.id };
+							if(typeof c.name==="string" && c.name.length>0) entry.name = c.name;
+							fresh.push(entry);
+						}
+						if(typeof onCandidates==="function") onCandidates(fresh);
+					}).catch(function(e){
+						done();
+						if(e && (e.name==="AbortError" || e.name==="TimeoutError")){
+							showToast("获取模型超时，请重试");
+						} else {
+							showToast(e && e.message ? e.message : String(e));
+						}
+						if(typeof onError==="function") onError();
+					});
+				};
 		// 官方模型页未暴露子插槽；按《AGENTS.md》插件只能注册新的 settings.section
 		// 分页，左侧导航与“模型”并列。此为官方推荐做法，完全不依赖 DOM 猜测。
 		var VisionSettingsSection = function(props) {
@@ -827,6 +837,11 @@ window.__ModuleLoader__.load({
 			var modalState = useState(null);
 			var modal = modalState[0];
 			var setModal = modalState[1];
+			// API 密钥草稿独立状态（官方 ProviderEditor 同款：draft 与 keyDraft 各一个 useState）。
+			// 存在 modal 对象里会被任何 setModal 重建路径覆盖丢失，表现为密钥莫名被清空。
+			var keyDraftState = useState("");
+			var keyDraft = keyDraftState[0];
+			var setKeyDraft = keyDraftState[1];
 			var delState = useState(null);
 			var delTarget = delState[0];
 			var setDelTarget = delState[1];
@@ -906,6 +921,36 @@ window.__ModuleLoader__.load({
 				return function(){ clearTimeout(t); };
 			},[toast2]);
 
+			// 编辑已有提供方时检测凭据是否已配置（含同 baseUrl 共享 key）：
+			// 已配置 → 密钥框显示「已配置——输入新值可替换」
+			var keyConfiguredState = useState(false);
+			var keyConfigured = keyConfiguredState[0];
+			var setKeyConfigured = keyConfiguredState[1];
+			useEffect(function(){
+				if(!modal || (modal.mode!=="edit" && modal.mode!=="edit-custom")){ setKeyConfigured(false); return; }
+				var p = modal.mode==="edit-custom" ? (modal.data.customProvider||"").trim() : (modal.data.provider||"").trim();
+				if(p.length===0 || !api || typeof api.credentials!=="object" || typeof api.credentials.describe!=="function"){ setKeyConfigured(false); return; }
+				var refs = [p.toUpperCase().replace(/[^A-Z0-9]+/g,"_")+"_API_KEY"];
+				// 同 baseUrl 的其他渠道共享同一网关 key，一并探测
+				var bu = (modal.data.baseUrl||"").trim().replace(/\/+$/,"");
+				if(bu.length>0 && Array.isArray(models)){
+					for(var _kc=0;_kc<models.length;_kc++){
+						var _ke = models[_kc];
+						if(_ke && _ke.provider!==p && typeof _ke.baseUrl==="string" && _ke.baseUrl.trim().replace(/\/+$/,"")===bu){
+							refs.push(_ke.provider.toUpperCase().replace(/[^A-Z0-9]+/g,"_")+"_API_KEY");
+						}
+					}
+				}
+				api.credentials.describe({ refs: refs }).then(function(r){
+					var configured = false;
+					var creds = r && r.result && r.result.ok && r.result.value ? r.result.value.credentials : null;
+					if(creds){
+						for(var k in creds){ if(creds[k] && creds[k].configured === true){ configured = true; break; } }
+					}
+					setKeyConfigured(configured);
+				}).catch(function(){ setKeyConfigured(false); });
+			}, [modal]);
+
 			var showToast = function(text){ setToast2(text); };
 
 			var submitAddOrEdit = function(){
@@ -913,6 +958,10 @@ window.__ModuleLoader__.load({
 				var isCustom = modal.data.provider==="custom" || modal.data.providerType==="custom";
 				var p = isCustom ? (modal.data.customProvider||"").trim() : (modal.data.provider||"").trim();
 				if(isCustom && p.length===0){ showToast("请填写自定义提供方名称"); return; }
+				// 自定义提供方名称格式：小写字母开头、仅小写字母/数字/连字符。
+				// 宿主 route 键与派生凭据 ref 都依赖该格式，非法名会在凭据写入
+				// （invalid payload）或运行期（NO_ADAPTER）被拒。
+				if(isCustom && !/^[a-z][a-z0-9-]*$/.test(p)){ showToast("Provider ID 必须以小写字母开头，仅可含小写字母、数字、连字符（如 acme-gateway）"); return; }
 				var m = (modal.data.model||"").trim();
 				var n = (modal.data.name||"").trim();
 				if(n.length===0) n = m;
@@ -928,20 +977,26 @@ window.__ModuleLoader__.load({
 				setBusy(true);
 				var isEdit = modal.mode==="edit" || modal.mode==="edit-custom";
 				var extra = {};
-				if(isCustom){ extra.baseUrl = (modal.data.baseUrl||"").trim(); extra.requestFormat = modal.data.requestFormat||"openai"; }
-				// API 密钥：复用官方 credentials 域写入（ref = PROVIDER_API_KEY）
-				var keyDraft = modal.keyDraft||"";
+				if(isCustom){ extra.baseUrl = (modal.data.baseUrl||"").trim(); extra.requestFormat = modal.data.requestFormat||"openai-completions"; }
+				// API 密钥：复用官方 credentials 域写入（ref = PROVIDER_API_KEY）；草稿在独立状态里
+				// Provider ID 已在表单/提交处校验（小写字母开头、仅含小写字母数字连字符），
+				// 派生出的 ref 必然匹配宿主 /^[A-Za-z_][A-Za-z0-9_]*$/，无需前缀补丁
 				var keyRef = p.toUpperCase().replace(/[^A-Z0-9]+/g,"_")+"_API_KEY";
+				// 返回 null=成功，字符串=失败原因（透传宿主 RPC 的 error message，
+				// 如环境变量只读遮蔽/ref 非法——否则用户只看到笼统的「保存失败」无法定位）
 				var keyWrite = keyDraft.trim().length>0 && api && typeof api.credentials==="object" && typeof api.credentials.set==="function"
-					? api.credentials.set({ ref: keyRef, value: keyDraft.trim() }).then(function(r){ return !(r && r.result && r.result.ok); })
-					: Promise.resolve(false);
-				keyWrite.then(function(keyFailed){
-					if(keyFailed){ setBusy(false); showToast("API 密钥保存失败"); return; }
+					? api.credentials.set({ ref: keyRef, value: keyDraft.trim() })
+						.then(function(r){ return (r && r.result && r.result.ok) ? null : ((r && r.result && r.result.error && r.result.error.message) || "写入被拒绝"); })
+						.catch(function(e){ return e && e.message ? e.message : String(e); })
+					: Promise.resolve(null);
+				keyWrite.then(function(keyErr){
+					if(keyErr){ setBusy(false); showToast("API 密钥保存失败："+keyErr); return; }
 					if(isEdit){
 						// 编辑模式：批量更新整个提供方及其所有模型（官方 provider 级编辑语义）。
 						// models 里的条目带 _entryId 用于后端区分更新/新增/删除。
-						var bodyObj = { provider: p, models: modelList.map(function(mm){ return { id: mm.id, name: mm.name||"", entryId: mm._entryId||"" }; }) };
-						if(isCustom){ bodyObj.baseUrl = extra.baseUrl; bodyObj.requestFormat = extra.requestFormat; }
+					var bodyObj = { provider: p, models: modelList.map(function(mm){ return { id: mm.id, name: mm.name||"", entryId: mm._entryId||"" }; }) };
+					if(isCustom){ bodyObj.baseUrl = extra.baseUrl; bodyObj.requestFormat = extra.requestFormat; }
+					bodyObj.displayName = (modal.data.displayName||"").trim();
 						fetch("/vision-opencode/vision-models",{method:"PUT", headers:{"content-type":"application/json"}, body: JSON.stringify(bodyObj)})
 						.then(function(r){ return r.json().then(function(j){ return {ok:r.ok,status:r.status,body:j}; }); })
 						.then(function(res){
@@ -950,6 +1005,7 @@ window.__ModuleLoader__.load({
 							setModels(res.body.models || []);
 							setPicker(null);
 							setModal(null);
+							setKeyDraft("");
 							showToast("已更新");
 						}).catch(function(e){ setBusy(false); showToast(String(e)); });
 					} else {
@@ -963,15 +1019,17 @@ window.__ModuleLoader__.load({
 							setBusy(false);
 							setPicker(null);
 							setModal(null);
+							setKeyDraft("");
 							fetchAll();
 								if(failed===0) showToast("已添加 "+created+" 个模型"+(skipped>0?"（跳过 "+skipped+" 个重复）":""));
 								else showToast("添加完成：成功 "+created+" 个，失败 "+failed+" 个");
 								return;
 							}
 							var entry = toCreate.shift();
-							var modelName = typeof entry.name==="string" && entry.name.length>0 ? entry.name : entry.id;
-							var bodyObj = { provider:p, model: entry.id, name:modelName, description:d };
-							if(isCustom){ bodyObj.baseUrl = extra.baseUrl; bodyObj.requestFormat = extra.requestFormat; }
+						var modelName = typeof entry.name==="string" && entry.name.trim().length>0 ? entry.name : entry.id;
+						var bodyObj = { provider:p, model: entry.id, name:modelName, description:d };
+						if(isCustom){ bodyObj.baseUrl = extra.baseUrl; bodyObj.requestFormat = extra.requestFormat; }
+						bodyObj.displayName = (modal.data.displayName||"").trim();
 							fetch("/vision-opencode/vision-models",{method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify(bodyObj)})
 							.then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, body:j}; }); })
 							.then(function(res){
@@ -1076,7 +1134,7 @@ window.__ModuleLoader__.load({
 			var updateReasoning = function(vm, value){
 				if(busy || !vm) return;
 				setBusy(true);
-				fetch("/vision-opencode/vision-models", {method:"PUT", headers:{"content-type":"application/json"}, body: JSON.stringify({id: vm.id, provider: vm.provider, model: vm.model, name: vm.name||"", description: vm.description||"", baseUrl: vm.baseUrl||"", requestFormat: vm.requestFormat||"openai", reasoning: value})})
+				fetch("/vision-opencode/vision-models", {method:"PUT", headers:{"content-type":"application/json"}, body: JSON.stringify({id: vm.id, provider: vm.provider, model: vm.model, name: vm.name||"", displayName: vm.displayName||"", description: vm.description||"", baseUrl: vm.baseUrl||"", requestFormat: vm.requestFormat||"openai-completions", reasoning: value})})
 					.then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, body:j}; }); })
 					.then(function(res){
 						setBusy(false);
@@ -1114,13 +1172,15 @@ window.__ModuleLoader__.load({
 				}
 				if(hint !== "读取能力…" && !offOk) hint += " · 无「关闭」档，仅能尝试";
 				if(cur === "forceOff") hint += " · 不保证成功";
-				return createElement("div",{className:"vmo-settings-reason-row"},
-					createElement("span",{className:"vmo-settings-reason-label"},"推理"),
-					createElement("div",{className:"vmo-effort-seg", role:"radiogroup", "aria-label":"推理策略"},
-						opts.map(function(o){
-							var sel = cur === o[0];
-							return createElement("button",{key:o[0], type:"button", role:"radio", "aria-checked":sel, disabled: busy, className:"vmo-effort-seg-btn"+(sel?" is-on":""), onClick:(function(v,val){ return function(){ updateReasoning(v, val); }; })(vm, o[0])}, o[1]);
-						})
+				return createElement("div",{className:"vmo-settings-reason-block"},
+					createElement("div",{className:"vmo-settings-reason-row"},
+						createElement("span",{className:"vmo-settings-reason-label"},"推理"),
+						createElement("div",{className:"vmo-effort-seg", role:"radiogroup", "aria-label":"推理策略"},
+							opts.map(function(o){
+								var sel = cur === o[0];
+								return createElement("button",{key:o[0], type:"button", role:"radio", "aria-checked":sel, disabled: busy, className:"vmo-effort-seg-btn"+(sel?" is-on":""), onClick:(function(v,val){ return function(){ updateReasoning(v, val); }; })(vm, o[0])}, o[1]);
+							})
+						)
 					),
 					createElement("div",{className:"vmo-settings-reason-hint"}, hint)
 				);
@@ -1213,26 +1273,36 @@ window.__ModuleLoader__.load({
 					var groupKeys = Object.keys(grouped).sort();
 					// 编辑整个提供方（及其所有模型）：官方模型页是 provider 级编辑，
 					// 打开编辑器时把该提供方全部模型放进 modal.models（带 _entryId 供批量保存）。
-					var openEditProvider = function(gProvider, gModels){
-						var first = gModels[0] || {};
-						var isCustomEdit = true;
-						for(var _pp4=0; _pp4<providers.length; _pp4++){ if(providers[_pp4] && providers[_pp4].provider===gProvider){ isCustomEdit = false; break; } }
-						setModal({
-							mode: isCustomEdit ? "edit-custom" : "edit",
-							data: {
-								id: first.id||"",
-								provider: isCustomEdit ? "custom" : gProvider,
-								customProvider: isCustomEdit ? gProvider : "",
-								model: first.model||"",
-								name: first.name||"",
-								description: first.description||"",
-								baseUrl: first.baseUrl||"",
-								requestFormat: first.requestFormat||"openai-completions",
-								providerType: isCustomEdit ? "custom" : gProvider
-							},
-							models: gModels.map(function(mm){ return { id: mm.model, name: mm.name||"", _entryId: mm.id }; })
-						});
-					};
+			var openEditProvider = function(gProvider, gModels){
+				var first = gModels[0] || {};
+				// 渠道形态判定：条目带 baseUrl（自定义端点）即视为自定义渠道，
+				// 编辑用自定义形态（Provider ID 输入框 + API 地址 + API 协议）；
+				// 否则为官方内置渠道（提供方下拉框）。
+				var isCustomEdit = gModels.some(function(mm){ return mm && typeof mm.baseUrl==="string" && mm.baseUrl.length>0; });
+				// 渠道显示名称取第一个条目的 displayName（渠道级字段，与模型名 name 分离）
+				var firstDisplay = "";
+				for(var _pp5=0; _pp5<gModels.length; _pp5++){
+					if(gModels[_pp5] && typeof gModels[_pp5].displayName==="string" && gModels[_pp5].displayName.length>0){ firstDisplay = gModels[_pp5].displayName; break; }
+				}
+				setModal({
+						mode: isCustomEdit ? "edit-custom" : "edit",
+						data: {
+							id: first.id||"",
+							provider: isCustomEdit ? "custom" : gProvider,
+							customProvider: isCustomEdit ? gProvider : "",
+							model: first.model||"",
+							name: first.name||"",
+							displayName: firstDisplay,
+							description: first.description||"",
+							// 地址由插件条目自己持有（条目里没存就显示空，由用户填写保存）
+							baseUrl: first.baseUrl||"",
+							requestFormat: first.requestFormat||"openai-completions",
+							providerType: isCustomEdit ? "custom" : gProvider
+						},
+						models: gModels.map(function(mm){ return { id: mm.model, name: mm.name||"", _entryId: mm.id }; })
+					});
+					setKeyDraft("");
+				};
 					var groupSections = [];
 					for(var gi=0; gi<groupKeys.length; gi++){
 						var gProvider = groupKeys[gi];
@@ -1241,7 +1311,7 @@ window.__ModuleLoader__.load({
 						for(var mi=0; mi<gModels.length; mi++){
 							var vm = gModels[mi];
 							var dotCls = isSelected(vm) ? C.credentialDot + " " + C.credentialDotConfigured : C.credentialDot + " " + C.credentialDotMissing;
-							var tag = vm.provider;
+							var tag = (vm.displayName && vm.displayName.length>0) ? vm.displayName : vm.provider;
 							gItems.push(createElement("li",{key:vm.id, className:C.rowCard},
 							createElement("div",{className:C.rowHead},
 								createElement("div",{className:C.rowIdentity},
@@ -1250,17 +1320,12 @@ window.__ModuleLoader__.load({
 									createElement("span",{className:C.rowTag}, tag)
 								),
 								createElement("div",{className:C.rowActions},
-									isSelected(vm)
-										? createElement("button",{type:"button", className:C.secondaryButton, disabled:true, style:{opacity:0.6,cursor:"default"}}, IconCheckOutline16 ? createElement(IconCheckOutline16,{size:12}) : null, "当前")
-										: createElement("button",{type:"button", className:C.secondaryButton, disabled:busy, style:{borderColor:"var(--dsw-alias-state-success-primary)",color:"var(--dsw-alias-state-success-primary)"}, onClick:(function(v){return function(){ selectAsCurrent(v); };})(vm)}, "设为当前"),
-									createElement("button",{type:"button", className:C.secondaryButton + " " + C.dangerButton, disabled:busy, onClick:(function(v){return function(){ setDelTarget(v); };})(vm)}, IconTrashOutline16 ? createElement(IconTrashOutline16,{size:12}) : null, "删除")
-								)
-							),
-							createElement("div",{className:C.modelCatalogMeta},
-								createElement("span",{style:{marginRight:"12px"}}, vm.provider+"/"+vm.model),
-								vm.description ? createElement("span",null, vm.description) : null,
-								isSelected(vm) ? createElement("span",{style:{marginLeft:"8px",color:"var(--dsw-alias-state-success-primary)"}}, "· 当前选中") : null
-							),
+								isSelected(vm)
+									? createElement("button",{type:"button", className:C.secondaryButton, disabled:true, style:{opacity:0.6,cursor:"default"}}, IconCheckOutline16 ? createElement(IconCheckOutline16,{size:12}) : null, "当前")
+									: createElement("button",{type:"button", className:C.secondaryButton, disabled:busy, style:{borderColor:"var(--dsw-alias-state-success-primary)",color:"var(--dsw-alias-state-success-primary)"}, onClick:(function(v){return function(){ selectAsCurrent(v); };})(vm)}, "设为当前"),
+								createElement("button",{type:"button", className:C.secondaryButton + " " + C.dangerButton, disabled:busy, onClick:(function(v){return function(){ setDelTarget(v); };})(vm)}, IconTrashOutline16 ? createElement(IconTrashOutline16,{size:12}) : null, "删除")
+							)
+						),
 						buildReasonRow(vm)
 					));
 				}
@@ -1269,10 +1334,16 @@ window.__ModuleLoader__.load({
 					createElement("div",{className:"vmo-provider-head-row"},
 						createElement("button",{type:"button", className:"vmo-provider-head", "aria-expanded": _open, onClick:(function(p){ return function(){ toggleExpand(p); }; })(gProvider)},
 							createElement("span",{className:"vmo-provider-chevron"}, IconChevronDownOutline14 ? createElement(IconChevronDownOutline14,{size:12}) : "›"),
-							createElement("span",{className:"vmo-provider-name"}, gProvider),
-							// 与官方模型页一致：declared === true（适配器仅因配置声明认识的渠道，
-							// 如 winterapi 网关/自托管）→ 显示「自定义」；opencode-go/deepseek 等内置不显示。
-							providers.some(function(p){ return p && p.provider===gProvider && p.declared === true; })
+							createElement("span",{className:"vmo-provider-name", title: gProvider}, (function(){
+								for(var _gd=0;_gd<gModels.length;_gd++){
+									if(gModels[_gd] && typeof gModels[_gd].displayName==="string" && gModels[_gd].displayName.length>0) return gModels[_gd].displayName;
+								}
+								return gProvider;
+							})()),
+							// 自定义标签：官方 declared（适配器仅因配置声明认识的渠道，如 winterapi 网关）
+							// 或插件自建的自定义渠道（条目带 baseUrl）都显示；opencode-go 等内置不显示。
+							(providers.some(function(p){ return p && p.provider===gProvider && p.declared === true; })
+								|| gModels.some(function(m){ return m && typeof m.baseUrl==="string" && m.baseUrl.length>0; }))
 								? createElement("span",{className:"vmo-provider-custom-tag"}, "自定义")
 								: null,
 							createElement("span",{className:"vmo-provider-count"}, gModels.length + " 个模型")
@@ -1315,17 +1386,21 @@ window.__ModuleLoader__.load({
 				var modalTitle = modal.mode==="custom" ? "自定义提供方" : (isEdit ? "编辑 Vision 模型" : "添加提供方");
 				var modalDesc = modal.mode==="custom" ? "新增自定义提供方（Provider ID / API 地址 / 模型）" : (isEdit ? "更新提供方/模型" : "从官方提供方目录选择后填入模型");
 				var updateField = function(key, val){
+					// 重建 modal 必须保留顶层字段（models）：只回传 {mode,data} 会把
+					// 模型目录丢掉，导致编辑已有渠道时 hasValidModel 失效、无法保存
 					var nd = {};
 					for(var k in modal.data) nd[k]=modal.data[k];
 					nd[key]=val;
-					setModal({mode: modal.mode, data: nd});
+					var nt = {};
+					for(var t in modal) nt[t]=modal[t];
+					nt.data = nd;
+					setModal(nt);
 				};
 				// 模型目录（modal.models 顶层数组）专用更新：渲染读取的是顶层 modal.models，
 				// 不能用 updateField（那只写 modal.data.models，列表不会刷新）。
+				// 同样必须浅拷贝保留其余顶层字段，否则点「添加模型」/编辑模型行会清空已输入的密钥。
 				var setModelsField = function(list){
-					var nd = {};
-					for(var k in modal.data) nd[k]=modal.data[k];
-					setModal({mode: modal.mode, data: nd, models: list});
+					setModal({mode: modal.mode, data: modal.data, models: list});
 				};
 				var selProvider = isCustomMode ? "" : (modal.data.provider||"");
 				var isBuiltinProvider = false;
@@ -1341,9 +1416,13 @@ window.__ModuleLoader__.load({
 				// 自定义提供方放在 API 协议下方（见 isCustomMode 分支）。
 				// placeholder 按模式区分：custom 不支持环境认证，只提示输入密钥。
 				var makeKeyField = function(placeholder){
+					// 已有凭据且未在输入新值 → 提示「已配置——输入新值可替换」
+					var ph = (keyConfigured && keyDraft.length===0)
+						? "已配置——输入新值可替换"
+						: (placeholder||"输入 API 密钥，或留空使用环境认证");
 					return createElement("div",{className:C.field},
 						createElement("span",{className:C.fieldLabel},"API 密钥"),
-						createElement("input",{className:C.input, type:"password", autoComplete:"off", value: modal.keyDraft||"", placeholder: placeholder||"输入 API 密钥，或留空使用环境认证", "aria-label":"API 密钥", onChange:function(e){ updateField("keyDraft", e.target.value); }})
+						createElement("input",{className:C.input, type:"password", autoComplete:"off", value: keyDraft, placeholder: ph, "aria-label":"API 密钥", onChange:function(e){ setKeyDraft(e.target.value); }})
 					);
 				};
 				if(!isCustomMode){
@@ -1366,7 +1445,12 @@ window.__ModuleLoader__.load({
 							})()
 						)
 					));
-					editorChildren.push(makeKeyField());
+				// 渠道显示名称：渠道级字段，显示在分组头（与模型名 name 分离）
+				editorChildren.push(createElement("div",{className:C.field},
+					createElement("span",{className:C.fieldLabel},"显示名称"),
+					createElement("input",{className:C.input, type:"text", value: modal.data.displayName||"", placeholder:"渠道显示名称（留空用提供方 ID）", "aria-label":"显示名称", onChange:function(e){ updateField("displayName", e.target.value); }})
+				));
+				editorChildren.push(makeKeyField());
 				}
 				// （API 密钥字段由 makeKeyField 生成，按模式分别 push：见两个分支）
 				// 自定义提供方：Provider ID / 显示名 / API 地址 / API 协议
@@ -1382,10 +1466,12 @@ window.__ModuleLoader__.load({
 						),
 						// 新增自定义提供方：未填写 API 地址或 API 密钥时不可获取模型（不依赖环境认证）；
 						// 编辑已有自定义提供方时凭据已存在，不限制
-						createElement("button",{type:"button", className:C.linkButton, disabled:busy||!!picker||(modal.mode==="custom" && (!modal.data.baseUrl || !modal.keyDraft)), title:(modal.mode==="custom" && (!modal.data.baseUrl || !modal.keyDraft)) ? "请先填写 API 地址和 API 密钥" : undefined, onClick:function(){
-							if(typeof fetchModelsFromProvider!=="function"){ showToast("获取模型不可用"); return; }
-							setPicker({candidates:[], selected:new Set(), busy:true});
-							fetchModelsFromProvider(modal, function(fresh){
+						createElement("button",{type:"button", className:C.linkButton, disabled:busy||!!picker||(modal.mode==="custom" && (!modal.data.baseUrl || !keyDraft)), title:(modal.mode==="custom" && (!modal.data.baseUrl || !keyDraft)) ? "请先填写 API 地址和 API 密钥" : undefined, onClick:function(){
+					if(typeof fetchModelsFromProvider!=="function"){ showToast("获取模型不可用"); return; }
+					var _selProvider = modal.data.provider || "";
+					var _isBuiltinP = Array.isArray(providers) && providers.some(function(p){ return p && p.provider===_selProvider && p.source==="builtin"; });
+					setPicker({candidates:[], selected:new Set(), busy:true});
+					fetchModelsFromProvider(modal, keyDraft, function(fresh){
 								// 只勾选已在模型目录里的模型（不再默认全选）；
 								// 其余候选保持未勾选，由用户主动勾选或使用下方「全选」。
 								var exist = {};
@@ -1393,8 +1479,12 @@ window.__ModuleLoader__.load({
 								for(var _li=0;_li<ml.length;_li++){ var _mm=ml[_li]; if(_mm && typeof _mm.id==="string") exist[_mm.id]=true; }
 								var sel = new Set();
 								for(var _fi=0;_fi<fresh.length;_fi++){ if(exist[fresh[_fi].id]) sel.add(fresh[_fi].id); }
-								setPicker({candidates:fresh, selected:sel, busy:false});
-							}, showToast, api);
+								// 弹窗已关闭（用户点了取消/遮罩）→ 保持关闭，不复活
+								setPicker(function(prev){ return prev===null ? null : {candidates:fresh, selected:sel, busy:false}; });
+							}, showToast, api, function(){
+								// 失败路径：复位 busy，让「获取可用模型」按钮可以重试
+								setPicker(null);
+							}, _isBuiltinP);
 						}}, busy||!!picker ? "获取中…" : "获取可用模型")
 					)
 				];
@@ -1436,14 +1526,19 @@ window.__ModuleLoader__.load({
 				}}, IconPlusOutline16 ? createElement(IconPlusOutline16,{size:14}) : null, " 添加模型"));
 				// 自定义提供方：Provider ID / 显示名 / API 地址 / API 协议 + 模型目录直接展示在主体
 				if(isCustomMode){
+					// Provider ID 格式：小写字母开头，仅可含小写字母、数字、连字符。
+					// 宿主 route 键与派生凭据 ref 都依赖该格式，非法字符会导致凭据写入
+					// 被拒（invalid payload）或运行期无适配器（NO_ADAPTER）。
+					var customId = modal.data.customProvider||"";
+					var customIdBad = customId.length>0 && !/^[a-z][a-z0-9-]*$/.test(customId);
 					editorChildren.push(createElement("div",{className:C.field},
 						createElement("span",{className:C.fieldLabel},"Provider ID"),
 						createElement("input",{className:C.input, type:"text", value: modal.data.customProvider||"", placeholder:"acme-gateway", "aria-label":"Provider ID", onChange:function(e){ updateField("customProvider", e.target.value); }}),
-						createElement("p",{className:C.advancedHint}, "以小写字母开头的标识，在请求中唯一标识该提供方，并用于派生凭据名。")
+						createElement("p",{className:C.advancedHint, style: customIdBad ? {color:"var(--dsw-alias-state-error-primary)"} : undefined}, customIdBad ? "不允许：必须以小写字母开头，仅可含小写字母、数字、连字符（如 acme-gateway）" : "以小写字母开头的标识（仅小写字母、数字、连字符），在请求中唯一标识该提供方，并用于派生凭据名。")
 					));
 					editorChildren.push(createElement("div",{className:C.field},
 						createElement("span",{className:C.fieldLabel},"显示名称"),
-						createElement("input",{className:C.input, type:"text", value: modal.data.name||"", placeholder:"显示名称", "aria-label":"显示名称", onChange:function(e){ updateField("name", e.target.value); }})
+						createElement("input",{className:C.input, type:"text", value: modal.data.displayName||"", placeholder:"显示名称（留空用提供方 ID）", "aria-label":"显示名称", onChange:function(e){ updateField("displayName", e.target.value); }})
 					));
 					editorChildren.push(createElement("div",{className:C.field},
 						createElement("span",{className:C.fieldLabel},"API 地址"),
@@ -1489,12 +1584,14 @@ window.__ModuleLoader__.load({
 				// - 新增自定义提供方额外要求 Provider ID、API 地址、API 密钥非空
 				//   （编辑已有自定义提供方时凭据已存在，不要求重填密钥）。
 				var hasValidModel = (Array.isArray(modal.models) ? modal.models : []).some(function(_mm){ return _mm && typeof _mm.id==="string" && _mm.id.trim().length>0; });
-				var canSubmit = hasValidModel && (modal.mode==="custom"
-					? (modal.data.customProvider||"").trim().length>0 && (modal.data.baseUrl||"").trim().length>0 && (modal.keyDraft||"").trim().length>0
+				// 自定义模式：Provider ID 格式（小写字母开头，仅小写字母/数字/连字符）
+				var customIdOk = modal.mode!=="custom" || /^[a-z][a-z0-9-]*$/.test((modal.data.customProvider||"").trim());
+				var canSubmit = hasValidModel && customIdOk && (modal.mode==="custom"
+					? (modal.data.customProvider||"").trim().length>0 && (modal.data.baseUrl||"").trim().length>0 && keyDraft.trim().length>0
 					: true);
 				var footer = createElement("div",{className:C.editorActions},
-					createElement("button",{type:"button", className:C.secondaryButton, onClick:function(){ setPicker(null); setModal(null); }}, "取消"),
-					createElement("button",{type:"button", className:C.primaryButton, disabled:busy||!canSubmit, title:!canSubmit ? (modal.mode==="custom" ? "请先填写 Provider ID、API 地址、API 密钥，并至少填写一个模型 ID" : "请至少填写一个模型 ID") : undefined, onClick:submitAddOrEdit}, busy ? "保存中…" : (isCustomMode ? "创建提供方" : "保存"))
+					createElement("button",{type:"button", className:C.secondaryButton, onClick:function(){ setPicker(null); setModal(null); setKeyDraft(""); }}, "取消"),
+					createElement("button",{type:"button", className:C.primaryButton, disabled:busy||!canSubmit, title:!canSubmit ? (modal.mode==="custom" ? (customIdOk ? "请先填写 Provider ID、API 地址、API 密钥，并至少填写一个模型 ID" : "Provider ID 必须以小写字母开头，仅可含小写字母、数字、连字符") : "请至少填写一个模型 ID") : undefined, onClick:submitAddOrEdit}, busy ? "保存中…" : (modal.mode==="custom" ? "创建提供方" : "保存"))
 				);
 				editorContent = content;
 			}
@@ -1512,9 +1609,10 @@ window.__ModuleLoader__.load({
 							if(providers[_pi3] && typeof providers[_pi3].provider==="string" && providers[_pi3].provider.length>0 && providers[_pi3].source!=="registered"){ firstProvider = providers[_pi3].provider; break; }
 						}
 						if(firstProvider.length===0) firstProvider = "opencode-go";
-						setModal({mode:"add", data:{id:"",provider:firstProvider,providerType:firstProvider,customProvider:"",model:"",name:"",description:"",baseUrl:"",requestFormat:"openai"}});
+setModal({mode:"add", data:{id:"",provider:firstProvider,providerType:firstProvider,customProvider:"",model:"",name:"",description:"",baseUrl:"",requestFormat:"openai-completions"}});
+							setKeyDraft("");
 					}}, IconPlusOutline16 ? createElement(IconPlusOutline16,{size:14}) : null, " 添加提供方"),
-					createElement("button",{type:"button", className:C.addButton, disabled:busy, onClick:function(){ setModal({mode:"custom", data:{id:"",provider:"custom",providerType:"custom",customProvider:"",model:"",name:"",description:"",baseUrl:"",requestFormat:"openai"}}); }}, IconPlusOutline16 ? createElement(IconPlusOutline16,{size:14}) : null, " 添加自定义提供方")
+					createElement("button",{type:"button", className:C.addButton, disabled:busy, onClick:function(){ setModal({mode:"custom", data:{id:"",provider:"custom",providerType:"custom",customProvider:"",model:"",name:"",description:"",baseUrl:"",requestFormat:"openai-completions"}}); setKeyDraft(""); }}, IconPlusOutline16 ? createElement(IconPlusOutline16,{size:14}) : null, " 添加自定义提供方")
 				);
 
 			var delEl = null;
@@ -1605,11 +1703,11 @@ window.__ModuleLoader__.load({
 				// footer 按钮也走官方：editorActions + secondaryButton / primaryButton，
 					// 与编辑器「添加提供方」dialog 完全一致；保持 picker 与编辑器的 footer 视觉同源。
 				var pickerFooter = createElement("div",{className:"vmo-modal-actions"},
-					createElement("label",{style:{display:"inline-flex",alignItems:"center",gap:"6px",fontSize:"13px",color:"var(--dsw-alias-label-secondary)",cursor:"pointer",flex:"1 1 auto",marginRight:"auto"}},
+					createElement("label",{style:{display:"inline-flex",alignItems:"center",gap:"6px",fontSize:"13px",color:"var(--dsw-alias-label-secondary)",cursor:"pointer",marginRight:"auto"}},
 						createElement("input",{type:"checkbox", checked:allChecked, disabled:picker.busy||pickerCandidates.length===0, onChange:toggleAll, style:{margin:0,width:"14px",height:"14px",accentColor:"var(--dsw-alias-button-primary-fill,var(--dsw-alias-state-success-primary))"}}),
 						createElement("span",null, allChecked ? "取消全选" : "全选")
 					),
-					createElement("button",{type:"button", className:"vmo-btn-secondary", disabled:picker.busy, onClick:closePicker}, "取消"),
+					createElement("button",{type:"button", className:"vmo-btn-secondary", onClick:closePicker}, "取消"),
 					createElement("button",{type:"button", className:"vmo-btn-primary", disabled:picker.busy||pickerSelected.size===0, onClick:addSelected}, "添加所选")
 				);
 				if(Modal){
