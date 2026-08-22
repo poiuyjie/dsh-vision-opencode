@@ -35,7 +35,6 @@ window.__ModuleLoader__.load({
 		var IconEditOutline16 = null;
 		var Toast = null;
 		var Modal = null;
-		var Button = null;
 		try {
 			var uiPrimitives = require("@deepseek-ai/dsh-client-ui-primitives");
 			IconCheckOutline16 = uiPrimitives.IconCheckOutline16;
@@ -46,13 +45,9 @@ window.__ModuleLoader__.load({
 			IconEditOutline16 = uiPrimitives.IconEditOutline16;
 			Toast = uiPrimitives.Toast;
 			Modal = uiPrimitives.Modal;
-			Button = uiPrimitives.Button;
 		} catch (_missing) {
 			/* 平台模块缺失：走内置兜底字形 */
 		}
-		var ReactDOMClient = null;
-		try { ReactDOMClient = require("react-dom/client"); } catch (_e) {}
-		if (ReactDOMClient === null) { try { ReactDOMClient = require("react-dom"); } catch (_e2) {} }
 
 		// ---- 跨 desktop/web 端 CSS Module hash 自适配（必须在注入 CSS 与构造 C map 之前）----
 		// desktop 端 DSH 用 zGbnIq_*，web 端 DSH 用 N78Vuq_*（CSS Module 编译 hash 不同），
@@ -756,8 +751,6 @@ window.__ModuleLoader__.load({
 			fetchDialog: cssHash+"fetchDialog", candidateList: cssHash+"candidateList",
 			candidate: cssHash+"candidate", candidateLabel: cssHash+"candidateLabel", candidateId: cssHash+"candidateId",
 		};
-		// API 协议清单（后端 /providers 提供；兜底常用值）
-		var protocolList = ["openai-completions", "openai-responses", "anthropic", "google-generative-ai", "bedrock-converse", "azure-openai-responses", "openrouter", "github-copilot", "cloudflare", "xai"];
 // 获取可用模型：走插件后端代理 /vision-opencode/discover-models。
 			// 后端在凭据服务有完整访问权限——编辑已有提供方时 keyDraft 为空，
 			// 后端会从凭据服务复用已有 key（客户端 API 面不暴露凭据值）。
@@ -822,6 +815,10 @@ window.__ModuleLoader__.load({
 			var modelsState = useState([]);
 			var models = modelsState[0];
 			var setModels = modelsState[1];
+			// 渠道级凭据 ref（后端计算：宿主路由 apiKeyEnv 优先 + 插件派生 ref；每个渠道只用自己的 key）
+			var keyRefsState = useState({});
+			var keyRefs = keyRefsState[0];
+			var setKeyRefs = keyRefsState[1];
 			var configState = useState(null);
 			var config = configState[0];
 			var setConfig = configState[1];
@@ -872,10 +869,10 @@ window.__ModuleLoader__.load({
 			var fetchAll = function(){
 				setLoading(true);
 				Promise.all([
-					fetch("/vision-opencode/vision-models",{headers:{accept:"application/json"}}).then(function(r){return r.json();}),
-					fetch("/vision-opencode/config",{headers:{accept:"application/json"}}).then(function(r){return r.json();}).catch(function(){return null;}),
-					fetch("/vision-opencode/models",{headers:{accept:"application/json"}}).then(function(r){return r.json();}).catch(function(){return {systemGroups:[]};}),
-					fetch("/vision-opencode/providers",{headers:{accept:"application/json"}}).then(function(r){return r.json();}).catch(function(){return {providers:[]};})
+					fetch("/vision-opencode/vision-models",{headers:{accept:"application/json"}}).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); }).catch(function(){ return {models:[]}; }),
+					fetch("/vision-opencode/config",{headers:{accept:"application/json"}}).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); }).catch(function(){ return null; }),
+					fetch("/vision-opencode/models",{headers:{accept:"application/json"}}).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); }).catch(function(){ return {systemGroups:[]}; }),
+					fetch("/vision-opencode/providers",{headers:{accept:"application/json"}}).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); }).catch(function(){ return {providers:[]}; })
 				]).then(function(res){
 					var vm = res[0];
 					var cfg = res[1];
@@ -883,6 +880,8 @@ window.__ModuleLoader__.load({
 					var prov = res[3];
 					if(vm && Array.isArray(vm.models)) setModels(vm.models);
 					else setModels([]);
+					if(vm && vm.keyRefs && typeof vm.keyRefs==="object") setKeyRefs(vm.keyRefs);
+					else setKeyRefs({});
 					if(cfg) setConfig(cfg);
 					// 恢复持久化的「忽略未导入系统模型」列表（× 掉的模型下次打开不再提示）
 					if(cfg && Array.isArray(cfg.ignoredModels)){
@@ -892,7 +891,6 @@ window.__ModuleLoader__.load({
 					}
 					if(prov && Array.isArray(prov.providers)) setProviders(prov.providers);
 					else setProviders([]);
-					if(prov && Array.isArray(prov.protocols) && prov.protocols.length>0) protocolList = prov.protocols.slice();
 					var flat = [];
 					if(sys && Array.isArray(sys.systemGroups)){
 						for(var gi=0; gi<sys.systemGroups.length; gi++){
@@ -951,6 +949,90 @@ window.__ModuleLoader__.load({
 				}).catch(function(){ setKeyConfigured(false); });
 			}, [modal]);
 
+			// 渠道级密钥状态：探测每个提供方（渠道）是否已配置 API 密钥，在分组头
+			// 名称旁画圆点，与官方「模型」页行内圆点同语义（已配置→绿点，未配置→红点，
+			// 未知→不显示）。ref 集合 = 后端 keyRefs（宿主路由 apiKeyEnv 优先，如
+			// deepseek-official→DEEPSEEK_API_KEY）∪ 客户端宿主路由 join ∪ 派生 ref。
+			// 每个渠道只用自己的 key，不复用兄弟渠道（同网关）的 key。
+			var keyStatusState = useState({});
+			var keyStatus = keyStatusState[0];
+			var setKeyStatus = keyStatusState[1];
+			useEffect(function(){
+				if(loading || err || !Array.isArray(models) || models.length===0){ setKeyStatus({}); return; }
+				if(!api || typeof api.credentials!=="object" || typeof api.credentials.describe!=="function"){ setKeyStatus({}); return; }
+				var refOf = function(p){ return p.toUpperCase().replace(/[^A-Z0-9]+/g,"_")+"_API_KEY"; };
+				var providersOf = [];
+				for(var _ks=0;_ks<models.length;_ks++){
+					var _ke=models[_ks];
+					if(!_ke || typeof _ke.provider!=="string" || _ke.provider.length===0) continue;
+					if(providersOf.indexOf(_ke.provider)<0) providersOf.push(_ke.provider);
+				}
+				var finish = function(extraRefs){
+					// extraRefs：provider → [refs]（后端 keyRefs 或客户端 join 的宿主路由 apiKeyEnv）
+					var refs = [];
+					var statusRefs = {};
+					for(var _pi=0;_pi<providersOf.length;_pi++){
+						var p = providersOf[_pi];
+						var list = (extraRefs && Array.isArray(extraRefs[p])) ? extraRefs[p].slice() : [];
+						if(list.indexOf(refOf(p))<0) list.push(refOf(p));
+						// 每个渠道只用自己的 key：不复用同 baseUrl 兄弟渠道的 key
+						statusRefs[p]=list;
+						for(var _r=0;_r<list.length;_r++){ if(refs.indexOf(list[_r])<0) refs.push(list[_r]); }
+					}
+					if(refs.length===0){ setKeyStatus({}); return; }
+					api.credentials.describe({ refs: refs }).then(function(r){
+						var creds = r && r.result && r.result.ok && r.result.value ? r.result.value.credentials : null;
+						if(!creds){ return; }
+						var status = {};
+						for(var _p2 in statusRefs){
+							var ok=false;
+							for(var _r2=0;_r2<statusRefs[_p2].length;_r2++){
+								var _c=creds[statusRefs[_p2][_r2]];
+								if(_c && _c.configured===true){ ok=true; break; }
+							}
+							status[_p2]= ok ? "configured" : "missing";
+						}
+						setKeyStatus(status);
+					}).catch(function(){ /* 状态未知：保留上次已知状态，不显示圆点 */ });
+				};
+				if(keyRefs && typeof keyRefs==="object" && Object.keys(keyRefs).length>0){ finish(keyRefs); return; }
+				// 后端未返回 keyRefs（旧 host）：客户端自行 join 宿主可配置路由的 apiKeyEnv，
+				// 与官方「模型」页同源（api.llm.providers + settings.describe）。
+				if(typeof api.llm!=="object" || typeof api.llm.providers!=="function"){ finish(null); return; }
+				api.llm.providers({}).then(function(r){
+					var provs = r && r.result && r.result.ok && r.result.value ? r.result.value.providers : null;
+					if(!Array.isArray(provs)){ finish(null); return; }
+					var byNs = {};
+					for(var _i=0;_i<provs.length;_i++){
+						var _pp=provs[_i];
+						if(!_pp || typeof _pp.provider!=="string" || typeof _pp.settingsNs!=="string" || _pp.settingsNs.length===0) continue;
+						if(!byNs[_pp.settingsNs]) byNs[_pp.settingsNs]=[];
+						byNs[_pp.settingsNs].push(_pp);
+					}
+					var nsNames = Object.keys(byNs);
+					if(nsNames.length===0 || typeof api.settings!=="object" || typeof api.settings.describe!=="function"){ finish(null); return; }
+					api.settings.describe({}).then(function(dr){
+						var views = dr && dr.result && dr.result.ok && dr.result.value ? dr.result.value.namespaces : null;
+						var nsValues = {};
+						if(Array.isArray(views)){ for(var _v=0;_v<views.length;_v++){ if(views[_v] && typeof views[_v].ns==="string") nsValues[views[_v].ns]=views[_v].value; } }
+						var extra = {};
+						for(var _n=0;_n<nsNames.length;_n++){
+							var entries = byNs[nsNames[_n]];
+							var root = nsValues[nsNames[_n]];
+							for(var _e=0;_e<entries.length;_e++){
+								var ent = entries[_e];
+								var cur = root;
+								var path = Array.isArray(ent.settingsPath) ? ent.settingsPath : [];
+								for(var _k=0;_k<path.length;_k++){ if(cur===null || typeof cur!=="object"){ cur=undefined; break; } cur=cur[path[_k]]; }
+								var env = (cur!==null && typeof cur==="object" && typeof cur.apiKeyEnv==="string" && cur.apiKeyEnv.length>0) ? cur.apiKeyEnv : null;
+								if(env){ if(!extra[ent.provider]) extra[ent.provider]=[]; extra[ent.provider].push(env); }
+							}
+						}
+						finish(extra);
+					}).catch(function(){ finish(null); });
+				}).catch(function(){ finish(null); });
+			}, [models, loading, err, keyRefs]);
+
 			var showToast = function(text){ setToast2(text); };
 
 			var submitAddOrEdit = function(){
@@ -1003,6 +1085,7 @@ window.__ModuleLoader__.load({
 							setBusy(false);
 							if(!res.ok){ showToast(res.body.error || ("HTTP "+res.status)); return; }
 							setModels(res.body.models || []);
+							if(res.body && res.body.keyRefs) setKeyRefs(res.body.keyRefs);
 							setPicker(null);
 							setModal(null);
 							setKeyDraft("");
@@ -1063,6 +1146,7 @@ window.__ModuleLoader__.load({
 					setBusy(false);
 					if(!res.ok){ showToast(res.body.error||"删除失败"); return; }
 					setModels(res.body.models||[]);
+					if(res.body && res.body.keyRefs) setKeyRefs(res.body.keyRefs);
 					setDelTarget(null);
 					showToast("已删除");
 				}).catch(function(e){ setBusy(false); showToast(String(e)); });
@@ -1092,9 +1176,6 @@ window.__ModuleLoader__.load({
 			var reasonInfoState = useState({});
 			var reasonInfo = reasonInfoState[0];
 			var setReasonInfo = reasonInfoState[1];
-			var reasonLoadingState = useState({});
-			var reasonLoading = reasonLoadingState[0];
-			var setReasonLoading = reasonLoadingState[1];
 			var reasonSeenState = useRef({});
 			var reasonSeen = reasonSeenState.current;
 			var ensureReasonInfo = function(vm){
@@ -1102,7 +1183,6 @@ window.__ModuleLoader__.load({
 				var k = vm.provider+"/"+vm.model;
 				if(reasonSeen[k]) return;   // 同步持久锁：第一个请求到来前就已锁定，后续任何调用直接短路
 				reasonSeen[k] = true;
-				var nl = {}; for(var i in reasonLoading) nl[i]=reasonLoading[i]; nl[k]=true; setReasonLoading(nl);
 				fetch("/vision-opencode/reasoning-levels?provider="+encodeURIComponent(vm.provider)+"&model="+encodeURIComponent(vm.model), {headers:{accept:"application/json"}})
 					.then(function(r){ return r.json().catch(function(){ return null; }); })
 					.then(function(j){
@@ -1118,15 +1198,9 @@ window.__ModuleLoader__.load({
 							n[k]={ efforts: eff, offSupported: os };
 							return n;
 						});
-						setReasonLoading(function(prev){
-							var n2 = {}; for(var y in prev) n2[y]=prev[y]; delete n2[k]; return n2;
-						});
 					}).catch(function(){
 						setReasonInfo(function(prev){
 							var n = {}; for(var x in prev) n[x]=prev[x]; n[k]={ efforts:[], offSupported:true }; return n;
-						});
-						setReasonLoading(function(prev){
-							var n2 = {}; for(var y in prev) n2[y]=prev[y]; delete n2[k]; return n2;
 						});
 					});
 			};
@@ -1140,6 +1214,7 @@ window.__ModuleLoader__.load({
 						setBusy(false);
 						if(!res.ok){ showToast(res.body.error || ("保存失败 HTTP "+res.status)); return; }
 						setModels(res.body.models || []);
+						if(res.body && res.body.keyRefs) setKeyRefs(res.body.keyRefs);
 						var label = value==="" ? "已设为默认（跟随提供方）" : value==="off" ? "已关闭思考（提供方支持时生效）" : "已设为强制关闭（实验，不保证成功）";
 						showToast(label);
 					}).catch(function(e){ setBusy(false); showToast(String(e)); });
@@ -1187,7 +1262,7 @@ window.__ModuleLoader__.load({
 			};
 			// 一次性为所有未读取能力的模型调度请求。
 			// effect 只依赖 [models, loading, err] —— 绝不依赖它自己写入的
-			// reasonInfo/reasonLoading，否则 setState → 渲染 → effect 重触发 → 死循环。
+			// reasonInfo，否则 setState → 渲染 → effect 重触发 → 死循环。
 			// 去重交给 reasonSeen（ref 同步锁），因此这里也无需 setTimeout。
 			useEffect(function(){
 				if(loading || err) return;
@@ -1201,7 +1276,7 @@ window.__ModuleLoader__.load({
 
 			var header = createElement("div",{className:"vmo-settings-head", style:{marginBottom:"0"} },
 				createElement("h3",{className:"vmo-settings-title"},"Vision 模型"),
-				createElement("span",{style:{marginLeft:"8px",fontSize:"12px",color:"var(--dsw-alias-label-tertiary)"}}, "插件自管 · 与上方提供方独立")
+				createElement("span",{style:{marginLeft:"8px",fontSize:"12px",color:"var(--dsw-alias-label-tertiary)"}}, "插件自管 · 与主模型提供方独立")
 			);
 			var intro = createElement("p",{className:C.intro}, "填入各提供方的 API 密钥即可使用其模型。");
 
@@ -1345,6 +1420,10 @@ window.__ModuleLoader__.load({
 							(providers.some(function(p){ return p && p.provider===gProvider && p.declared === true; })
 								|| gModels.some(function(m){ return m && typeof m.baseUrl==="string" && m.baseUrl.length>0; }))
 								? createElement("span",{className:"vmo-provider-custom-tag"}, "自定义")
+								: null,
+							// 渠道密钥状态圆点：与官方「模型」页同款（已配置→绿，未配置→红，未知→不显示）
+							(keyStatus[gProvider]==="configured" || keyStatus[gProvider]==="missing")
+								? createElement("span",{className:C.credentialDot + " " + (keyStatus[gProvider]==="configured" ? C.credentialDotConfigured : C.credentialDotMissing), role:"img", title: keyStatus[gProvider]==="configured" ? "已配置 API 密钥" : "未配置 API 密钥", "aria-label": keyStatus[gProvider]==="configured" ? "已配置 API 密钥" : "未配置 API 密钥"})
 								: null,
 							createElement("span",{className:"vmo-provider-count"}, gModels.length + " 个模型")
 						),
@@ -1765,7 +1844,7 @@ setModal({mode:"add", data:{id:"",provider:firstProvider,providerType:firstProvi
 							order: 11,
 							label: function(){ return "Vision 模型"; },
 							inject: function() {
-								return { injected: { api: connection ? connection.api : null, protocols: protocolList } };
+								return { injected: { api: connection ? connection.api : null } };
 							}
 						}, VisionSettingsSection);
 					});

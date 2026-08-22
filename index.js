@@ -238,11 +238,24 @@ export function apply(ctx, entry) {
     settingsService = sctx.settings;
     settingsScope = settingsService.register(NS, Config, { base: entry });
     current = () => settingsScope.get();
+    let unwatch = null;
     sctx.effect(() => () => {
       current = () => entry;
+      // 注销配置监听，避免插件卸载/热重载后 watcher 泄漏并访问已销毁的 ctx
+      if (typeof unwatch === 'function') unwatch();
+      unwatch = null;
     });
     // 启动时迁移并还原旧版本的持久化图片闸门（幂等、尽力而为）
     void ensureGateOverrides();
+    // settings 就绪后才构建自管 adapter：apply 顶层调用时 current 还是 entry
+    // （空配置），collectCustomProviders 会返回空，adapter 永远不会被创建，
+    // 识图因此退回宿主路由（UNKNOWN_MODEL）。这里确保配置解析后再注册。
+    void syncCustomAdapter();
+    // 配置变化（visionModels 增删/字段修改、外部导入等）时自动重建自管 adapter。
+    // HTTP 路由里已有的显式同步调用保持幂等（sync 内部去重）。
+    if (typeof settingsScope.watch === 'function') {
+      unwatch = settingsScope.watch(() => { void syncCustomAdapter(); });
+    }
   });
 
   // ---- 自注册适配器：自定义提供方不写宿主配置，而是由插件直接注册 adapter ----
@@ -250,6 +263,12 @@ export function apply(ctx, entry) {
   // PiAiAdapter 复用 llm-pi-ai 的完整协议实现（SSE/reasoning/认证），
   // 插件只构造 profiles Map（含 pi-ai 的 Provider 对象），不影响官方设置页。
   let customAdapterHandle = null;
+  // 插件自管的 PiAiAdapter 实例：包含全部自定义 provider（含与宿主同名的渠道）。
+  // 识图调用优先直连该实例，不依赖宿主 provider 配置——主模型与识图模型
+  // 可以分属不同供应商，识图模型只要在 visionModels 里登记过（baseUrl 非空）即可。
+  let customAdapterInstance = null;
+  /** 插件自管 provider 名集合（visionModels 中 baseUrl 非空的渠道）。 */
+  let customProviderIds = new Set();
   const PI_PROTOCOL_FACTORIES = {};
   /**
    * 收集所有自定义提供方（baseUrl 非空）的模型条目，按 provider 分组返回。
@@ -262,7 +281,15 @@ export function apply(ctx, entry) {
     for (const e of vms) {
       if (typeof e.baseUrl !== 'string' || e.baseUrl.length === 0) continue;
       const p = e.provider;
-      if (!groups[p]) groups[p] = { provider: p, baseUrl: e.baseUrl, requestFormat: e.requestFormat || 'openai-completions', displayName: p, models: [], apiKeyEnv: deriveKeyRef(p) };
+      if (!groups[p]) groups[p] = {
+        provider: p,
+        baseUrl: e.baseUrl,
+        requestFormat: e.requestFormat || 'openai-completions',
+        // 渠道级显示名优先取条目 displayName（如 "WinterAPI"），缺省回退 provider id
+        displayName: (typeof e.displayName === 'string' && e.displayName.trim().length > 0) ? e.displayName.trim() : p,
+        models: [],
+        apiKeyEnv: deriveKeyRef(p),
+      };
       groups[p].models.push({ id: e.model, name: e.name || e.model });
     }
     return Object.values(groups);
@@ -272,34 +299,68 @@ export function apply(ctx, entry) {
     return provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_') + '_API_KEY';
   }
   /**
-   * 解析一个提供方可用的凭据 ref 名（返回 null 表示无可用凭据）。
-   * 优先级：自己的 ref → 同 baseUrl 的其他渠道的 ref（网关共享 key 场景：
-   * 用户给 winterapi 网关存的 key 存在 WINTERAPI_API_KEY 下，插件里叫 s 的
-   * 渠道也走同一网关，理应复用同一个 key）。
+   * 每个渠道（提供方分组）实际生效的凭据 ref 集合，供设置页渠道圆点判定。
+   * 与官方「模型」页同语义：渠道经宿主路由走时优先取该路由 profile 的
+   * apiKeyEnv（deepseek-official 宿主路由默认 DEEPSEEK_API_KEY，不是按渠道
+   * id 派生的名字）；再并入插件自己的派生 ref（编辑弹窗/自定义渠道写入约定）。
+   * 每个渠道只用**自己的** key，不复用兄弟渠道（同网关）的 key。
+   * 返回 { provider: [ref, ...] }。
    */
-  async function resolveProviderKeyRef(provider, baseUrl) {
-    const credentials = ctx.get('credentials');
-    if (credentials === void 0 || typeof credentials.resolve !== 'function') return null;
-    const tryRef = async (ref) => {
-      try {
-        const hit = await credentials.resolve(ref);
-        return hit !== void 0 && typeof hit.value === 'string' && hit.value.length > 0 ? ref : null;
-      } catch { return null; }
-    };
-    const own = await tryRef(deriveKeyRef(provider));
-    if (own !== null) return own;
-    // 同 baseUrl 的其他渠道（含大小写/末尾斜杠归一），按创建顺序尝试
+  function channelKeyRefs() {
     const vms = options().visionModels;
-    if (Array.isArray(vms)) {
-      const norm = (u) => (u || '').replace(/\/+$/, '');
-      const siblings = vms.filter((e) => typeof e.baseUrl === 'string'
-        && e.baseUrl.length > 0 && e.provider !== provider && norm(e.baseUrl) === norm(baseUrl));
-      for (const sib of siblings) {
-        const hit = await tryRef(deriveKeyRef(sib.provider));
-        if (hit !== null) return hit;
+    const refsByProvider = {};
+    if (!Array.isArray(vms)) return refsByProvider;
+    const configurable = new Map();
+    try {
+      for (const cp of ctx.llm.listConfigurableProviders()) {
+        if (cp && typeof cp.provider === 'string') configurable.set(cp.provider, cp);
       }
+    } catch { /* 旧 host 无此 API：全部退回派生 ref */ }
+    const getPath = (obj, path) => {
+      let cur = obj;
+      for (const key of Array.isArray(path) ? path : []) {
+        if (cur === null || typeof cur !== 'object') return undefined;
+        cur = cur[key];
+      }
+      return cur;
+    };
+    const providers = [];
+    for (const e of vms) {
+      if (e && typeof e.provider === 'string' && e.provider.length > 0 && providers.indexOf(e.provider) < 0) providers.push(e.provider);
     }
-    return null;
+    for (const p of providers) {
+      const refs = [];
+      const push = (r) => { if (typeof r === 'string' && r.length > 0 && refs.indexOf(r) < 0) refs.push(r); };
+      const cp = configurable.get(p);
+      if (cp && typeof cp.settingsNs === 'string' && cp.settingsNs.length > 0 && settingsService !== void 0) {
+        try {
+          const profile = getPath(settingsService.get(cp.settingsNs), cp.settingsPath);
+          if (profile !== null && typeof profile === 'object') {
+            const env = profile.apiKeyEnv;
+            if (typeof env === 'string' && env.length > 0) push(env);
+          }
+        } catch { /* profile 读不到：退回派生 ref */ }
+      }
+      push(deriveKeyRef(p));
+      refsByProvider[p] = refs;
+    }
+    return refsByProvider;
+  }
+  /**
+   * 解析一个提供方实际生效的凭据 ref 名（**总是返回该渠道自己的派生 ref**）。
+   *
+   * 规则：每个渠道必须用自己的 key——即使多个渠道共享同一 baseUrl（同一网关），
+   * 也绝不复用兄弟渠道的 key。返回 `deriveKeyRef(provider)`（如 winterapi →
+   * `WINTERAPI_API_KEY`），凭据由用户在凭据服务/环境变量中按此名配置。
+   *
+   * 不做启动期探测的原因：本函数在 settings 注入回调（插件启动早期）执行，
+   * 此时 credentials 服务可能尚未激活（cordis ctx.get strict 模式返回 undefined），
+   * 探测会失败；但请求发生时服务一定可用。因此始终返回派生 ref，
+   * 由运行时的 resolveApiKey 解析，避免 profile 缺 apiKeyEnv 导致
+   * pi-ai 报 "No API key for provider"。
+   */
+  function resolveProviderKeyRef(provider) {
+    return deriveKeyRef(provider);
   }
   /** 异步初始化 pi-ai 协议工厂（首次使用）。 */
   async function ensureProtocolFactories() {
@@ -320,75 +381,110 @@ export function apply(ctx, entry) {
   /**
    * 注册/更新/注销插件的自定义提供方 adapter。
    * 每次 visionModels 变化后调用（启动时、POST/PUT/DELETE 后）。
+   *
+   * 设计：插件的识图路由与宿主 provider 配置完全解耦。
+   *  - 插件始终为所有 baseUrl 非空的自定义渠道构建自己的 PiAiAdapter 实例
+   *    （customAdapterInstance），识图调用直连该实例，不依赖宿主模型目录；
+   *  - 只有宿主尚未注册的 provider 才注册到宿主（避免 DUPLICATE_ADAPTER）；
+   *    宿主已注册的同名渠道（如用户把同一网关也配成了主模型）不会影响识图，
+   *    插件用自己的实例直连，模型目录以 visionModels 为准。
+   *  - 防重入：settings watch 与 HTTP 路由可能并发触发，用 in-flight promise
+   *    串行化（同一时刻只执行一次，后续调用复用本次结果）。
    */
+  let customAdapterSyncInFlight = null;
   async function syncCustomAdapter() {
-    try {
-      const groups = collectCustomProviders();
-      if (groups.length === 0) {
-        // 没有自定义提供方 → 注销已有 adapter
-        if (customAdapterHandle) { customAdapterHandle(); customAdapterHandle = null; }
-        return;
-      }
-      const [piAiMod, piMod] = await Promise.all([
-        import('@deepseek-ai/dsh-llm-pi-ai').catch(() => null),
-        import('@earendil-works/pi-ai').catch(() => null),
-      ]);
-      if (!piAiMod || !piMod) { ctx.logger.warn('vision-opencode: 缺少 llm-pi-ai/pi-ai 模块，自定义提供方无法注册 adapter'); return; }
-      const { PiAiAdapter } = piAiMod;
-      const { createProvider } = piMod;
-      await ensureProtocolFactories();
-      const profiles = new Map();
-      // 宿主已注册的 provider 列表：同名渠道用官方的 adapter，插件不重复注册（否则 DUPLICATE_ADAPTER）
-      const hostProviders = new Set();
-      try { for (const p of ctx.llm.listProviders()) hostProviders.add(p.id); } catch { /* 读不到就不跳过 */ }
-      for (const g of groups) {
-        if (hostProviders.has(g.provider)) {
-          ctx.logger.info(`vision-opencode: provider "${g.provider}" 已有宿主 adapter，插件不重复注册（该渠道走宿主路由）`);
-          continue;
+    if (customAdapterSyncInFlight !== null) return customAdapterSyncInFlight;
+    customAdapterSyncInFlight = (async () => {
+      try {
+        const groups = collectCustomProviders();
+        if (groups.length === 0) {
+          // 没有自定义提供方 → 注销已有注册与实例
+          if (customAdapterHandle) { customAdapterHandle(); customAdapterHandle = null; }
+          customAdapterInstance = null;
+          customProviderIds = new Set();
+          return;
         }
-        const proto = g.requestFormat === 'anthropic' ? 'anthropic-messages' : (g.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions');
-        const factory = PI_PROTOCOL_FACTORIES[proto];
-        if (!factory) { ctx.logger.warn(`vision-opencode: 协议 "${proto}" 无可用实现，跳过 provider "${g.provider}"`); continue; }
-        // 凭据 ref：自己的派生名优先，解析不到时复用同 baseUrl 其他渠道的 key（网关共享）
-        const keyRef = await resolveProviderKeyRef(g.provider, g.baseUrl);
-        const piModels = g.models.map((m) => ({
-          id: m.id, name: m.name, api: proto, provider: g.provider, baseUrl: g.baseUrl,
-          input: ['text', 'image'], contextWindow: 262144, maxTokens: 32768,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        }));
-        const piProvider = createProvider({
-          id: g.provider, name: g.displayName, baseUrl: g.baseUrl,
-          auth: { apiKey: { name: g.displayName, resolve: async ({ credential }) => ({ auth: credential?.key === void 0 ? {} : { apiKey: credential.key }, source: g.displayName }) } },
-          models: piModels,
-          api: factory(),
-        });
-        profiles.set(g.provider, {
-          provider: g.provider, displayName: g.displayName, streamIdleTimeoutMs: 300000,
-          ...(keyRef !== null ? { apiKeyEnv: keyRef } : {}), configuredMaxTokens: new Map(), piProvider,
-        });
-      }
-      if (profiles.size === 0) {
+        const [piAiMod, piMod] = await Promise.all([
+          import('@deepseek-ai/dsh-llm-pi-ai').catch(() => null),
+          import('@earendil-works/pi-ai').catch(() => null),
+        ]);
+        if (!piAiMod || !piMod) { ctx.logger.warn('vision-opencode: 缺少 llm-pi-ai/pi-ai 模块，自定义提供方无法注册 adapter'); return; }
+        const { PiAiAdapter } = piAiMod;
+        const { createProvider } = piMod;
+        await ensureProtocolFactories();
+        const profiles = new Map();
+        // 宿主已注册的 provider 列表：同名渠道不重复注册（否则 DUPLICATE_ADAPTER），
+        // 但仍会构建进插件的自管实例，识图直连不受影响。
+        const hostProviders = new Set();
+        try { for (const p of ctx.llm.listProviders()) hostProviders.add(p.id); } catch { /* 读不到就不跳过 */ }
+        for (const g of groups) {
+          const proto = g.requestFormat === 'anthropic' ? 'anthropic-messages' : (g.requestFormat === 'openai-responses' ? 'openai-responses' : 'openai-completions');
+          const factory = PI_PROTOCOL_FACTORIES[proto];
+          if (!factory) { ctx.logger.warn(`vision-opencode: 协议 "${proto}" 无可用实现，跳过 provider "${g.provider}"`); continue; }
+          // 凭据 ref：每个渠道用自己的 key，不复用兄弟渠道（网关共享 key）的 key
+          const keyRef = resolveProviderKeyRef(g.provider);
+          const piModels = g.models.map((m) => ({
+            id: m.id, name: m.name, api: proto, provider: g.provider, baseUrl: g.baseUrl,
+            input: ['text', 'image'], contextWindow: 262144, maxTokens: 32768,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          }));
+          const piProvider = createProvider({
+            id: g.provider, name: g.displayName, baseUrl: g.baseUrl,
+            auth: { apiKey: { name: g.displayName, resolve: async ({ credential }) => ({ auth: credential?.key === void 0 ? {} : { apiKey: credential.key }, source: g.displayName }) } },
+            models: piModels,
+            api: factory(),
+          });
+          profiles.set(g.provider, {
+            provider: g.provider, displayName: g.displayName, streamIdleTimeoutMs: 300000,
+            // 与宿主 llm-pi-ai profile 默认值一致：识图图片请求的像素/字节预算，
+            // 缺失会让 pi-ai 报 "maxPixels must be a positive integer"。
+            requestImagePixelBudget: 2048 * 2048,
+            requestImageMaxBytes: 1024 * 1024,
+            ...(keyRef !== null ? { apiKeyEnv: keyRef } : {}), configuredMaxTokens: new Map(), piProvider,
+          });
+        }
+        if (profiles.size === 0) {
+          if (customAdapterHandle) { customAdapterHandle(); customAdapterHandle = null; }
+          customAdapterInstance = null;
+          customProviderIds = new Set();
+          return;
+        }
+        const resolveApiKey = async (provider, profile) => {
+          const ref = profile.apiKeyEnv;
+          if (ref === void 0) return void 0;
+          const credentials = ctx.get('credentials');
+          const hit = credentials !== void 0 ? (await credentials.resolve(ref))?.value : void 0;
+          return hit !== void 0 && hit.length > 0 ? hit : void 0;
+        };
+        // 每次重建 adapter + 注销重注册：PiAiAdapter 的 profiles 闭包不可替换，
+        // replace() 只换路由名，模型增删会因旧闭包不生效
         if (customAdapterHandle) { customAdapterHandle(); customAdapterHandle = null; }
-        return;
+        const adapter = new PiAiAdapter({ profiles: () => profiles, resolveApiKey, resolveAttachments: () => ctx.get('attachments') });
+        // 自管实例始终持有全部自定义渠道（含宿主同名渠道），识图直连用它
+        customAdapterInstance = adapter;
+        customProviderIds = new Set(profiles.keys());
+        // 只把宿主未注册的 provider 挂到宿主路由；宿主已注册的同名渠道由自管实例直连
+        const registerable = [...profiles.keys()].filter((p) => !hostProviders.has(p));
+        if (registerable.length > 0) {
+          customAdapterHandle = ctx.llm.registerAdapter(registerable, adapter);
+          ctx.logger.info(`vision-opencode: 注册自定义 provider 到宿主路由: ${registerable.join(', ')}；自管直连: ${[...profiles.keys()].join(', ')}`);
+        } else {
+          customAdapterHandle = null;
+          ctx.logger.info(`vision-opencode: 所有自定义渠道均已被宿主占用，识图全部走插件自管直连: ${[...profiles.keys()].join(', ')}`);
+        }
+      } catch (error) {
+        ctx.logger.warn('vision-opencode: 自定义提供方 adapter 注册失败', error);
       }
-      const resolveApiKey = async (provider, profile) => {
-        const ref = profile.apiKeyEnv;
-        if (ref === void 0) return void 0;
-        const credentials = ctx.get('credentials');
-        const hit = credentials !== void 0 ? (await credentials.resolve(ref))?.value : void 0;
-        return hit !== void 0 && hit.length > 0 ? hit : void 0;
-      };
-      // 每次重建 adapter + 注销重注册：PiAiAdapter 的 profiles 闭包不可替换，
-      // replace() 只换路由名，模型增删会因旧闭包不生效
-      if (customAdapterHandle) { customAdapterHandle(); customAdapterHandle = null; }
-      const adapter = new PiAiAdapter({ profiles: () => profiles, resolveApiKey, resolveAttachments: () => ctx.get('attachments') });
-      customAdapterHandle = ctx.llm.registerAdapter([...profiles.keys()], adapter);
-    } catch (error) {
-      ctx.logger.warn('vision-opencode: 自定义提供方 adapter 注册失败', error);
+    })();
+    try {
+      return await customAdapterSyncInFlight;
+    } finally {
+      customAdapterSyncInFlight = null;
     }
   }
-  // 启动时注册现有自定义提供方
-  syncCustomAdapter().catch(() => {});
+  // 启动时注册现有自定义提供方：只在 settings 注入回调内调用（见上），
+  // 顶层不再调用——否则 settings 注入前 current 还是 entry（空配置），
+  // 且可能与注入回调内的调用竞争 in-flight promise，导致真实配置永不同步。
 
   // ---- 结构性拦截：执行前拒绝内置 read_image，防止真实图片进入纯文本主模型上下文 ----
   // 背景：运行时兼容层会让配置的纯文本主模型临时声明“支持图片输入”，
@@ -765,14 +861,19 @@ export function apply(ctx, entry) {
     if (!tlm) return false;                       // 思考模型但没有任何档位声明 → 未申报 off
     return tlm.off !== undefined && tlm.off !== null && tlm.off !== ''; // 有真实 wire 值才叫申报
   }
-  /** 缓存每个 provider/model 由适配器申报的推理档位集合（null=元数据不可用）。 */
-  let reasoningLevelsCache = null;
+  /** 缓存每个 provider/model 由适配器申报的推理档位集合（null=元数据不可用）。
+   *  Map 多键缓存：不同模型并发/交替查询时不互相驱逐；上限 64 条防无限增长。 */
+  const reasoningLevelsCache = new Map();
+  const REASONING_LEVELS_CACHE_MAX = 64;
   async function supportedLevels(route) {
     const key = route.provider + '\0' + route.model;
-    if (reasoningLevelsCache !== null && reasoningLevelsCache.key === key) return reasoningLevelsCache.levels;
+    if (reasoningLevelsCache.has(key)) return reasoningLevelsCache.get(key);
     let levels = null;
     try {
-      const info = await ctx.llm.resolveModelInfo(route.provider, route.model);
+      // 自管渠道：用插件自己的 adapter 实例查询（宿主路由没有这些模型，会 UNKNOWN_MODEL）
+      const info = customAdapterInstance !== null && customProviderIds.has(route.provider)
+        ? await customAdapterInstance.resolveModel(route.provider, route.model)
+        : await ctx.llm.resolveModelInfo(route.provider, route.model);
       const efforts = info?.reasoning?.efforts;
       // efforts 是 {id,name} 对象数组；只取字符串 id，使 Set.has('off')/排序/JSON 都正确
       if (Array.isArray(efforts)) {
@@ -782,7 +883,11 @@ export function apply(ctx, entry) {
         levels = new Set(ids);
       }
     } catch { /* 元数据不可用：levels=null */ }
-    reasoningLevelsCache = { key, levels };
+    if (reasoningLevelsCache.size >= REASONING_LEVELS_CACHE_MAX) {
+      // 淘汰最早插入的键（Map 迭代顺序 = 插入顺序）
+      reasoningLevelsCache.delete(reasoningLevelsCache.keys().next().value);
+    }
+    reasoningLevelsCache.set(key, levels);
     return levels;
   }
   /** 活动模型条目的推理策略：''=默认(跟随)；'off'=关闭；'forceOff'=强制关闭(实验)。
@@ -818,10 +923,30 @@ export function apply(ctx, entry) {
   let forceOffProbe = null; // { route, index, done, winnerKey, lastTextKey }
   async function callVisionForceOffDirect(ref, signal, question, route) {
     try {
-      if (route.provider !== 'opencode-go') return void 0;
-      const apiKey = (typeof route.apiKey === 'string' && route.apiKey.length > 0)
-        ? route.apiKey
-        : (typeof process !== 'undefined' && process.env && process.env.OPENCODE_GO_API_KEY);
+      // 直连目标：自管渠道（visionModels 里有 baseUrl）用其网关；opencode-go 用固定网关
+      let baseUrl = '';
+      const vmEntry = (route.visionModels || []).find((e) => e.provider === route.provider
+        && typeof e.baseUrl === 'string' && e.baseUrl.length > 0);
+      if (vmEntry) baseUrl = vmEntry.baseUrl.replace(/\/+$/, '');
+      const endpoint = baseUrl.length > 0
+        ? baseUrl + '/chat/completions'
+        : (route.provider === 'opencode-go' ? 'https://opencode.ai/zen/go/v1/chat/completions' : '');
+      if (endpoint.length === 0) return void 0;
+      // apiKey：route.apiKey 直填 > credentials 派生 ref > 环境变量
+      let apiKey = (typeof route.apiKey === 'string' && route.apiKey.length > 0) ? route.apiKey : '';
+      if (apiKey.length === 0) {
+        try {
+          const credentials = ctx.get('credentials');
+          if (credentials !== void 0 && typeof credentials.resolve === 'function') {
+            const ref = deriveKeyRef(route.provider);
+            const hit = await credentials.resolve(ref);
+            if (hit !== void 0 && typeof hit.value === 'string' && hit.value.length > 0) apiKey = hit.value;
+          }
+        } catch { /* 无凭据 → 交给环境变量 */ }
+      }
+      if (apiKey.length === 0 && typeof process !== 'undefined' && process.env) {
+        apiKey = process.env[deriveKeyRef(route.provider)] || process.env.OPENCODE_GO_API_KEY || '';
+      }
       const bytes = ref && ref.bytes;
       if (!apiKey || !bytes || (typeof bytes.byteLength === 'number' && bytes.byteLength === 0)) return void 0;
       const mediaType = (ref && typeof ref.mediaType === 'string' && ref.mediaType) || 'image/png';
@@ -855,7 +980,7 @@ export function apply(ctx, entry) {
         const body = Object.assign({ model: route.model, max_tokens: 1024, messages: [baseMessage] }, cand.patch);
         let resp;
         try {
-          resp = await fetch('https://opencode.ai/zen/go/v1/chat/completions', {
+          resp = await fetch(endpoint, {
             method: 'POST',
             headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
             body: JSON.stringify(body),
@@ -894,6 +1019,11 @@ export function apply(ctx, entry) {
   /** 单次识图子调用：组装带图消息 → 流式请求识图模型 → 返回纯文本。 */
   async function callVisionOnce(ref, signal, question) {
     const route = options();
+    // 兜底：配置中已有自管渠道（baseUrl 非空）但自管 adapter 尚未构建
+    // （启动时序/同步失败），先同步一次再路由，避免退回宿主路由报 UNKNOWN_MODEL。
+    if (customAdapterInstance === null && collectCustomProviders().length > 0) {
+      await syncCustomAdapter();
+    }
     // 强制关闭 + 未真申报 off → 尝试直连网关（自适应多参数试出该厂商的关闭方式，不保证成功）
     if (activeStrategy(route) === 'forceOff') {
       const off = await trueOffSupported(route);
@@ -918,7 +1048,10 @@ export function apply(ctx, entry) {
     });
     const assembler = new BlockAssembler();
     const reasoningEffort = await visionReasoningParam(route, activeStrategy(route));
-    for await (const chunk of ctx.llm.stream({
+    // 识图路由：插件自管渠道（visionModels 中有 baseUrl 的条目）→ 直连插件自己的
+    // PiAiAdapter 实例，不经过宿主路由（主模型与识图模型解耦）。
+    const useCustomRoute = customAdapterInstance !== null && customProviderIds.has(route.provider);
+    const streamOptions = {
       provider: route.provider,
       model: route.model,
       system: VISION_SYSTEM_PROMPT,
@@ -926,9 +1059,34 @@ export function apply(ctx, entry) {
       temperature: 0.2,
       ...(reasoningEffort !== void 0 ? { reasoningEffort } : {}),
       signal,
-      [BYPASS]: true,
-    })) {
-      assembler.push(chunk);
+    };
+    try {
+      if (useCustomRoute) {
+        for await (const chunk of customAdapterInstance.stream(streamOptions)) {
+          assembler.push(chunk);
+        }
+      } else {
+        for await (const chunk of ctx.llm.stream({ ...streamOptions, [BYPASS]: true })) {
+          assembler.push(chunk);
+        }
+      }
+    } catch (error) {
+      // 自管直连路径的 PiAiAdapter 错误以异常形式抛出（不走 finish chunk），
+      // 在此统一包装为带 code 的 Error 供上游重试/降级判定。
+      const detail = error?.message ?? String(error);
+      const wrapped = new Error(`识图模型 ${route.provider}/${route.model} 分析图片失败: ${detail}`);
+      wrapped.code = error?.code;
+      if (wrapped.code === void 0 || wrapped.code.length === 0) {
+        // 尝试从错误链上找 code（pi-ai 原始错误可能带 statusCode）
+        let cur = error;
+        while (cur) {
+          if (typeof cur.code === 'string' && cur.code.length > 0) { wrapped.code = cur.code; break; }
+          if (typeof cur.statusCode === 'number') { wrapped.code = cur.statusCode >= 500 ? `HTTP_${cur.statusCode}` : void 0; break; }
+          if (typeof cur.status === 'number') { wrapped.code = cur.status >= 500 ? `HTTP_${cur.status}` : void 0; break; }
+          cur = cur.cause;
+        }
+      }
+      throw wrapped;
     }
     const finish = assembler.finish;
     if (finish.kind === 'error' || finish.kind === 'aborted') {
@@ -1594,7 +1752,7 @@ export function apply(ctx, entry) {
       handler: async (req, res) => {
         try {
           if (req.method === 'GET') {
-            json(res, 200, { models: options().visionModels });
+            json(res, 200, { models: options().visionModels, keyRefs: channelKeyRefs() });
             return;
           }
           if (req.method === 'POST') {
@@ -1638,7 +1796,7 @@ export function apply(ctx, entry) {
             }
             // 自定义提供方（带 baseUrl）注册到宿主 adapter（不写 llm-pi-ai 配置）
             if (baseUrl.length > 0) await syncCustomAdapter();
-            json(res, 201, { models: options().visionModels, created: entry });
+            json(res, 201, { models: options().visionModels, created: entry, keyRefs: channelKeyRefs() });
             return;
           }
           if (req.method === 'PUT') {
@@ -1670,17 +1828,17 @@ export function apply(ctx, entry) {
                 json(res, 400, { error: 'at least one model is required' });
                 return;
               }
-              const current = [...options().visionModels];
-              const keep = current.filter((e) => e.provider !== provider);
+              const rawModels = [...options().visionModels];
+              const keep = rawModels.filter((e) => e.provider !== provider);
               const next = [];
               const used = new Set();
               for (const m of want) {
                 let existing = null;
                 if (m.entryId.length > 0) {
-                  existing = current.find((e) => e.id === m.entryId && e.provider === provider) ?? null;
+                  existing = rawModels.find((e) => e.id === m.entryId && e.provider === provider) ?? null;
                 }
                 if (existing === null) {
-                  existing = current.find((e) => e.provider === provider && e.model === m.model) ?? null;
+                  existing = rawModels.find((e) => e.provider === provider && e.model === m.model) ?? null;
                 }
                 if (existing !== null && !used.has(existing.id)) {
                   used.add(existing.id);
@@ -1700,7 +1858,7 @@ export function apply(ctx, entry) {
               }
               // 自定义提供方（带 baseUrl）随批量编辑重新注册到宿主 adapter
               if (baseUrl.length > 0) await syncCustomAdapter();
-              json(res, 200, { models: options().visionModels, updated: next });
+              json(res, 200, { models: options().visionModels, updated: next, keyRefs: channelKeyRefs() });
               return;
             }
             const id = typeof body?.id === 'string' ? body.id.trim() : '';
@@ -1737,7 +1895,7 @@ export function apply(ctx, entry) {
               const next = { ...options(), visionModels: models };
               current = () => next;
             }
-            json(res, 200, { models: options().visionModels, updated: models[idx] });
+            json(res, 200, { models: options().visionModels, updated: models[idx], keyRefs: channelKeyRefs() });
             return;
           }
           if (req.method === 'DELETE') {
@@ -1765,7 +1923,7 @@ export function apply(ctx, entry) {
               }
               // 自定义提供方随删除从宿主 adapter 注销
               await syncCustomAdapter();
-              json(res, 200, { models: options().visionModels, removed: before - nextModels.length });
+              json(res, 200, { models: options().visionModels, removed: before - nextModels.length, keyRefs: channelKeyRefs() });
               return;
             }
             if (id.length === 0) {
@@ -1791,7 +1949,7 @@ export function apply(ctx, entry) {
             }
             // 自定义提供方随模型删除重新注册（剩余条目变化会自动反映到 adapter）
             await syncCustomAdapter();
-            json(res, 200, { models: options().visionModels });
+            json(res, 200, { models: options().visionModels, keyRefs: channelKeyRefs() });
             return;
           }
           res.writeHead(405);
@@ -1849,12 +2007,12 @@ export function apply(ctx, entry) {
           // baseUrl 仅自定义渠道必填：内置提供方（opencode-go 等）走 pi-ai 目录捷径不需要地址，
           // 宿主 discoverModels 会在 provider 不在目录且无 baseURL 时报错（届时透传该错误）
           // 密钥：优先用表单草稿；编辑已有提供方时草稿为空 → 从凭据服务复用已有 key
-          // （自己的 ref 优先，解析不到时复用同 baseUrl 其他渠道的 key）
+          // （只用自己的派生 ref，不复用同 baseUrl 其他渠道的 key）
           let apiKey = keyDraft;
           let keySource = 'draft';
           if (apiKey.length === 0) {
             try {
-              const keyRef = await resolveProviderKeyRef(provider, baseUrl);
+              const keyRef = resolveProviderKeyRef(provider);
               if (keyRef !== null) {
                 const credentials = ctx.get('credentials');
                 const hit = credentials !== void 0 ? (await credentials.resolve(keyRef)) : void 0;
