@@ -49,56 +49,15 @@ window.__ModuleLoader__.load({
 			/* 平台模块缺失：走内置兜底字形 */
 		}
 
-		// ---- 跨 desktop/web 端 CSS Module hash 自适配（必须在注入 CSS 与构造 C map 之前）----
-		// desktop 端 DSH 用 zGbnIq_*，web 端 DSH 用 N78Vuq_*（CSS Module 编译 hash 不同），
-		// 且 DSH 编译会重写官方样式选择器但不改 plugin 的字面 className。
-		// 不写死候选 hash：直接扫描当前页面已注入的样式规则，找出包含我们
-		// 实际复用类名（modelCatalog/editor/rowCard 等）的 hash 前缀。
-		// DSH 升级只要类名不变、只换 hash 前缀，就能自动适配。
-		function detectCssHash() {
-			var targets = ["modelCatalog", "editor", "editorHeader", "rowCard", "addCard", "title"];
-			var found = {};
-			try {
-				for (var si = 0; si < document.styleSheets.length; si++) {
-					var rules;
-					try { rules = document.styleSheets[si].cssRules; } catch (err) { continue; }
-					if (!rules) continue;
-					for (var ri = 0; ri < rules.length; ri++) {
-						var r = rules[ri];
-						if (typeof r.selectorText !== "string") continue;
-						// CSS Module 类名形态：`hash_原类名`（hash 为 5~10 位字母数字）
-						var m = /\.([A-Za-z0-9]{5,10})_([A-Za-z0-9_]+)/.exec(r.selectorText);
-						if (m === null) continue;
-						var hash = m[1] + "_";
-						var cls = m[2];
-						if (targets.indexOf(cls) >= 0 && found[cls] === undefined) found[cls] = hash;
-					}
-				}
-			} catch (err) { /* 样式表不可读时走下方兜底探测 */ }
-			if (found.modelCatalog) return found.modelCatalog;
-			if (found.editor) return found.editor;
-			if (found.rowCard) return found.rowCard;
-			if (found.addCard) return found.addCard;
-			if (found.editorHeader) return found.editorHeader;
-			if (found.title) return found.title;
-			// 兜底：官方 CSS 尚未注入/不可读时，用固定候选注入测试元素探测
-			var probes = ["zGbnIq_", "N78Vuq_", "GL8Viq_", "ZLY6Yq_"];
-			for (var i = 0; i < probes.length; i++) {
-				var cls2 = probes[i] + "vmo_hash_probe";
-				var s = document.createElement("style");
-				s.textContent = "." + cls2 + " { color: rgb(" + (i+1) + ",0,0) !important; }";
-				document.head.appendChild(s);
-				var d = document.createElement("span");
-				d.className = cls2;
-				document.body.appendChild(d);
-				var c = window.getComputedStyle(d).color;
-				document.body.removeChild(d);
-				document.head.removeChild(s);
-				if (c === "rgb(" + (i+1) + ", 0, 0)") return probes[i];
-			}
-			return "zGbnIq_";
-		}
-		var cssHash = detectCssHash();
+		// ---- 设置页样式：内置复刻官方 ModelsSection.module.css（前缀 vmo-of-） ----
+		// 曾经的方案是运行时扫描页面样式表探测官方 CSS Module hash 前缀再复用
+		// 官方类（hash_原名 形态）。DSH 0.1.2-alpha 起前端拆成 __ModuleLoader__
+		// 运行时模块、设置页各 section 的 CSS 只在官方模块被加载时才注入——
+		// 直接打开 Vision 设置页时官方样式表不在 document.styleSheets 里，
+		// 探测必然失败并回退到旧 hash，整页官方类全部失效（按钮退化成浏览器
+		// 默认样式）。因此改为把官方设置页样式逐字内置（仅类名加 vmo-of- 前缀，
+		// 规则原文与官方源码一致），不再依赖官方 CSS 的注入时机与 hash 形态；
+		// 主题令牌（--dsw-*）仍随官方深浅色自动切换。
 
 		// ---- 注入样式：逐字复刻官方 ModelSelect.module.css（前缀 vmo-） ----
 		// 注意：web 客户端热更新时 <head> 不会被重建，旧 <style> 标签会留存，
@@ -172,8 +131,8 @@ window.__ModuleLoader__.load({
 				".vmo-check{display:grid;place-items:center;flex:0 0 18px;font-size:14px;color:var(--dsw-alias-label-primary)}",
 				/* 视觉隐藏的常驻读屏直播区：只镜像进度文案，避免恢复 "Vision" 时被播报 */
 				".vmo-sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;clip:rect(0 0 0 0);clip-path:inset(50%);overflow:hidden;white-space:nowrap}",
-				/* 设置页 Vision 分组：复刻 zGbnIq_* 令牌，深色/浅色自动跟随 */
-			/* 官方 CSS 类映射见下方 C 常量；Vision 列表与表单直接复用官方 zGbnIq_* 类 */
+				/* 设置页 Vision 分组外壳与供应商分组头：插件自绘（vmo-settings- 与 vmo-provider- 前缀），
+				   列表/表单控件样式走下方内置复刻的官方设置页类（vmo-of- 前缀，见 C 常量） */
 				".vmo-settings-section{max-width:720px;color:var(--dsw-alias-label-primary);display:flex;flex-direction:column;gap:12px;margin-top:24px;padding-top:16px;border-top:1px solid var(--dsw-alias-border-l2)}",
 				".vmo-settings-title{color:var(--dsw-alias-label-primary);margin:0;font-size:16px;font-weight:500;line-height:24px}",
 				".vmo-settings-intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:14px;line-height:22px}",
@@ -206,8 +165,8 @@ window.__ModuleLoader__.load({
 				".vmo-settings-error{color:var(--dsw-alias-state-error-primary);font-size:13px;padding:6px 8px;background:var(--dsw-alias-interactive-bg-hover-danger);border-radius:8px}",
 			/* 供应商分组头：大字号（参考官方 rowName 14px），箭头指示展开/收起 */
 			".vmo-provider-group{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:10px 12px;background:var(--dsw-alias-bg-primary)}",
-			".vmo-provider-group ." + cssHash + "rowCard{background:var(--dsw-alias-bg-primary)}",
-			".vmo-provider-group ." + cssHash + "modelEntry{background:var(--dsw-alias-bg-primary)}",
+			".vmo-provider-group .vmo-of-rowCard{background:var(--dsw-alias-bg-primary)}",
+			".vmo-provider-group .vmo-of-modelEntry{background:var(--dsw-alias-bg-primary)}",
 			".vmo-provider-head-row{display:flex;align-items:center;gap:8px;width:100%}",
 			".vmo-provider-head-edit{flex:none;height:26px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:13px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;cursor:pointer;display:inline-flex;align-items:center;gap:4px}",
 			".vmo-provider-head-edit:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
@@ -246,7 +205,106 @@ window.__ModuleLoader__.load({
 				".vmo-picker-row-box{flex:none;width:16px;height:16px;border:1.5px solid rgba(0,0,0,0.25);border-radius:4px;display:inline-flex;align-items:center;justify-content:center;background:transparent;color:#fff;transition:background-color 120ms ease,border-color 120ms ease}",
 				"[data-ds-dark-theme] .vmo-picker-row-box{border-color:rgba(255,255,255,0.25)}",
 				".vmo-picker-row.vmo-picker-row-checked .vmo-picker-row-box{background:rgb(59,130,246);border-color:rgb(59,130,246)}",
-				".vmo-picker-rows .vmo-picker-empty{color:var(--dsw-alias-label-tertiary);font-size:13px;padding:20px 0;text-align:center}"
+				".vmo-picker-rows .vmo-picker-empty{color:var(--dsw-alias-label-tertiary);font-size:13px;padding:20px 0;text-align:center}",
+				/* ---- 官方设置页样式内置复刻（packages/client/ui-settings-models/src/client/
+				   ModelsSection.module.css，仅类名加 vmo-of- 前缀，规则原文一致）----
+				   颜色全部走 --dsw-alias-* 令牌，深浅色随官方主题自动切换。
+				   同步官方时对照源文件逐条 diff 即可。 */
+				".vmo-of-section{display:flex;flex-direction:column;gap:12px;max-width:720px;color:var(--dsw-alias-label-primary)}",
+				".vmo-of-title{margin:0;font-size:16px;line-height:24px;font-weight:500;color:var(--dsw-alias-label-primary)}",
+				".vmo-of-intro{margin:0;font-size:14px;line-height:22px;color:var(--dsw-alias-label-tertiary)}",
+				".vmo-of-notice{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-state-warn-label)}",
+				".vmo-of-savedNotice{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-state-success-primary)}",
+				".vmo-of-rows{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}",
+				".vmo-of-rowCard{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:12px}",
+				".vmo-of-rowHead{display:flex;align-items:center;gap:10px}",
+				".vmo-of-rowIdentity{display:inline-flex;align-items:center;gap:6px;min-width:0}",
+				".vmo-of-rowName{font-size:14px;line-height:22px;font-weight:500;color:var(--dsw-alias-label-primary)}",
+				".vmo-of-rowTag{flex:none;padding:1px 6px;border:1px solid var(--dsw-alias-border-l3);border-radius:4px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary)}",
+				".vmo-of-credentialDot{box-sizing:border-box;display:inline-block;flex:none;width:8px;height:8px;border-radius:50%}",
+				".vmo-of-credentialDotConfigured{background:var(--dsw-alias-state-success-primary)}",
+				".vmo-of-credentialDotMissing{background:var(--dsw-alias-state-error-primary)}",
+				".vmo-of-rowActions{display:inline-flex;align-items:center;gap:4px;margin-left:auto}",
+				/* 控件统一 border-box：应用无全局 border-box reset，缺了它 outlined 变体
+				   会比 filled 高 2px（取消/保存、编辑/删除并排时肉眼可见） */
+				".vmo-of-primaryButton,.vmo-of-secondaryButton,.vmo-of-addButton{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;height:36px;padding:0 14px;border:none;border-radius:18px;font:inherit;font-size:14px;line-height:22px;cursor:pointer}",
+				".vmo-of-primaryButton{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}",
+				".vmo-of-primaryButton:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}",
+				".vmo-of-secondaryButton,.vmo-of-addButton{border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-primary)}",
+				".vmo-of-secondaryButton:hover:not(:disabled),.vmo-of-addButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}",
+				".vmo-of-secondaryButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}",
+				".vmo-of-dangerButton{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;height:36px;padding:0 14px;border:none;border-radius:18px;background:transparent;color:var(--dsw-alias-state-error-primary);font:inherit;font-size:14px;line-height:22px;cursor:pointer}",
+				".vmo-of-dangerButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger)}",
+				/* 行内控件用致密胶囊（Button .sm） */
+				".vmo-of-rowActions .vmo-of-secondaryButton,.vmo-of-rowActions .vmo-of-dangerButton{height:28px;padding:0 10px;border-radius:14px;font-size:12px;line-height:18px}",
+				".vmo-of-primaryButton:disabled,.vmo-of-secondaryButton:disabled,.vmo-of-dangerButton:disabled,.vmo-of-addButton:disabled,.vmo-of-linkButton:disabled,.vmo-of-addModelButton:disabled{opacity:0.4;cursor:default}",
+				".vmo-of-primaryButton:focus-visible,.vmo-of-secondaryButton:focus-visible,.vmo-of-dangerButton:focus-visible,.vmo-of-addButton:focus-visible,.vmo-of-linkButton:focus-visible,.vmo-of-addModelButton:focus-visible,.vmo-of-iconButton:focus-visible,.vmo-of-customizedSummary:focus-visible{outline:none;box-shadow:0 0 0 2px var(--dsw-alias-border-l3)}",
+				/* 编辑面：面板上的填充模块，与设置选择器填充一致 */
+				".vmo-of-editor{border-radius:12px;background:var(--dsw-alias-bg-module-platform);padding:14px 16px;display:flex;flex-direction:column;gap:14px}",
+				".vmo-of-editorHeader{display:flex;align-items:baseline;gap:8px}",
+				".vmo-of-editorTitle{font-size:14px;line-height:22px;font-weight:500;color:var(--dsw-alias-label-primary)}",
+				".vmo-of-editorRoute{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
+				".vmo-of-field{display:flex;flex-direction:column;gap:6px}",
+				".vmo-of-fieldLabel{display:inline-flex;align-items:center;gap:10px;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-label-secondary)}",
+				".vmo-of-linkButton{box-sizing:border-box;display:inline-flex;align-items:center;height:28px;padding:0 10px;border:none;border-radius:14px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:12px;line-height:18px;cursor:pointer}",
+				".vmo-of-linkButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}",
+				".vmo-of-advancedHint{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
+				".vmo-of-editorActions{display:flex;justify-content:flex-end;gap:8px}",
+				".vmo-of-addBlock{display:flex;flex-direction:column;gap:12px}",
+				/* 两个添加入口是同级兄弟、与上方行卡片同宽；换行而不是缩到不可读 */
+				".vmo-of-addActions{display:flex;flex-wrap:wrap;gap:10px}",
+				".vmo-of-addButton{flex:1 1 0;min-width:180px;gap:6px;height:44px;border:1px dashed var(--dsw-alias-border-l3);border-radius:12px}",
+				".vmo-of-addCard,.vmo-of-setupCard{border-radius:12px;background:var(--dsw-alias-bg-module-platform);padding:14px 16px;display:flex;flex-direction:column;gap:14px;list-style:none}",
+				/* 已带模块外壳的卡片内嵌套编辑器时去掉双重填充 */
+				".vmo-of-addCard .vmo-of-editor,.vmo-of-setupCard .vmo-of-editor{background:none;padding:0}",
+				".vmo-of-customized{border-top:1px solid var(--dsw-alias-border-l2);padding-top:10px}",
+				/* details 原生标记换成旋转箭头：内置三角各引擎不一且吃不到标签色 */
+				".vmo-of-customizedSummary{display:flex;align-items:center;gap:6px;width:fit-content;padding:2px 4px;margin-left:-4px;border-radius:6px;cursor:pointer;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-label-secondary);list-style:none}",
+				".vmo-of-customizedSummary::-webkit-details-marker{display:none}",
+				".vmo-of-customizedSummary::before{content:'';width:5px;height:5px;border-right:1.5px solid currentcolor;border-bottom:1.5px solid currentcolor;transform:rotate(-45deg) translate(-1px,-1px);transition:transform 120ms ease}",
+				".vmo-of-customized[open] > .vmo-of-customizedSummary::before{transform:rotate(45deg) translate(-1px,-1px)}",
+				".vmo-of-customizedSummary:hover{color:var(--dsw-alias-label-primary)}",
+				".vmo-of-customizedBody{display:flex;flex-direction:column;gap:12px;padding-top:12px}",
+				/* 模型目录：表格而非卡片堆叠 */
+				".vmo-of-modelCatalog{display:flex;flex-direction:column;gap:10px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2)}",
+				".vmo-of-modelCatalogHeading{display:flex;flex-direction:column;gap:2px}",
+				".vmo-of-modelCatalogTitle{font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-label-secondary)}",
+				".vmo-of-modelCatalogMeta,.vmo-of-modelEmpty{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}",
+				".vmo-of-modelList{display:flex;flex-direction:column;gap:8px}",
+				".vmo-of-modelListHead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}",
+				".vmo-of-modelEntry{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px}",
+				".vmo-of-modelRow{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) auto auto;align-items:center;gap:6px}",
+				/* 方形无文字的行操作：语义在输入框上，动作用 aria-label 自述 */
+				".vmo-of-iconButton{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer}",
+				".vmo-of-iconButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
+				".vmo-of-iconButton:disabled{cursor:default;opacity:0.4}",
+				".vmo-of-iconButtonDanger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}",
+				".vmo-of-modelAdvanced{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;padding:8px 4px 2px}",
+				".vmo-of-modelField{display:flex;flex-direction:column;gap:4px}",
+				".vmo-of-modelFieldLabel{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}",
+				".vmo-of-modelEmpty{padding:12px;border:1px dashed var(--dsw-alias-border-l3);border-radius:8px;text-align:center}",
+				".vmo-of-addModelButton{box-sizing:border-box;align-self:flex-start;display:inline-flex;align-items:center;gap:4px;height:28px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:18px;cursor:pointer}",
+				".vmo-of-addModelButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}",
+				".vmo-of-input{box-sizing:border-box;width:100%;height:32px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;font:inherit;font-size:14px;line-height:22px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}",
+				/* 枚举下拉只有少量短选项，字段宽度的下拉读起来像文本框 */
+				"select.vmo-of-input{max-width:240px;cursor:pointer}",
+				".vmo-of-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}",
+				".vmo-of-input::placeholder{color:var(--dsw-alias-label-dimmed)}",
+				".vmo-of-input:disabled{opacity:0.6;cursor:default}",
+				/* .input 的 select 变体：右侧内嵌 12px 箭头替换系统箭头，右 pad 留位 */
+				".vmo-of-selectInput{appearance:none;padding-right:32px;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");background-repeat:no-repeat;background-position:right 12px center;background-size:12px 12px}",
+				".vmo-of-error{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-state-error-primary)}",
+				".vmo-of-deleteDialog{width:min(480px,100%)}",
+				".vmo-of-deleteConfirm:not(:disabled){border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}",
+				".vmo-of-deleteConfirm:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger)}",
+				".vmo-of-hiddenLabel{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}",
+				"@media (prefers-reduced-motion: reduce){.vmo-of-customizedSummary::before{transition:none}}",
+				".vmo-of-fetchDialog{max-width:520px;--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2)}",
+				".vmo-of-candidateActions{display:flex;justify-content:flex-end;margin-bottom:6px}",
+				".vmo-of-candidateList{display:flex;flex-direction:column;gap:2px;max-height:320px;margin:0;overflow-y:auto;padding:0;list-style:none}",
+				".vmo-of-candidate{border-radius:6px}",
+				".vmo-of-candidateLabel{display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer}",
+				".vmo-of-candidateId{flex:1 1 auto;font-family:var(--ds-font-family-code);font-size:13px;overflow-wrap:anywhere}"
 			].join("\n");
 			document.head.appendChild(styleTag);
 		}
@@ -724,32 +782,34 @@ window.__ModuleLoader__.load({
 			);
 		};
 
-		// ---- 官方模型设置页的 CSS 类名映射（hash 已在工厂顶部运行时探测）----
-		// 直接复用官方样式类，Vision 设置页与官方「模型」页视觉完全一致。
+		// ---- 设置页样式类映射 ----
+		// 指向内置复刻的官方设置页类（vmo-of-*，样式原文见顶部注入的 CSS）。
+		// 不再复用官方 hash 类：官方设置页 CSS 在 0.1.2-alpha 起按模块懒注入，
+		// 直接打开 Vision 页时多半尚未注入，复用会整页失样式。
 		var C = {
-			section: cssHash+"section", title: cssHash+"title", intro: cssHash+"intro",
-			notice: cssHash+"notice", savedNotice: cssHash+"savedNotice",
-			rows: cssHash+"rows", rowCard: cssHash+"rowCard", rowHead: cssHash+"rowHead",
-			rowIdentity: cssHash+"rowIdentity", rowName: cssHash+"rowName", rowTag: cssHash+"rowTag",
-			credentialDot: cssHash+"credentialDot", credentialDotConfigured: cssHash+"credentialDotConfigured",
-			credentialDotMissing: cssHash+"credentialDotMissing", rowActions: cssHash+"rowActions",
-			primaryButton: cssHash+"primaryButton", secondaryButton: cssHash+"secondaryButton",
-			dangerButton: cssHash+"dangerButton", editor: cssHash+"editor", editorHeader: cssHash+"editorHeader",
-			editorTitle: cssHash+"editorTitle", editorRoute: cssHash+"editorRoute",
-			field: cssHash+"field", fieldLabel: cssHash+"fieldLabel", linkButton: cssHash+"linkButton",
-			advancedHint: cssHash+"advancedHint", editorActions: cssHash+"editorActions",
-			addBlock: cssHash+"addBlock", addActions: cssHash+"addActions", addButton: cssHash+"addButton",
-			addCard: cssHash+"addCard", customized: cssHash+"customized", customizedSummary: cssHash+"customizedSummary",
-			customizedBody: cssHash+"customizedBody", modelCatalog: cssHash+"modelCatalog",
-			modelCatalogHeading: cssHash+"modelCatalogHeading", modelCatalogTitle: cssHash+"modelCatalogTitle",
-			modelCatalogMeta: cssHash+"modelCatalogMeta", modelList: cssHash+"modelList",
-			modelListHead: cssHash+"modelListHead", modelEntry: cssHash+"modelEntry", modelRow: cssHash+"modelRow",
-			iconButton: cssHash+"iconButton", iconButtonDanger: cssHash+"iconButtonDanger",
-			modelAdvanced: cssHash+"modelAdvanced", modelField: cssHash+"modelField", modelFieldLabel: cssHash+"modelFieldLabel",
-			modelEmpty: cssHash+"modelEmpty", addModelButton: cssHash+"addModelButton",
-			input: cssHash+"input", selectInput: cssHash+"selectInput", error: cssHash+"error",
-			fetchDialog: cssHash+"fetchDialog", candidateList: cssHash+"candidateList",
-			candidate: cssHash+"candidate", candidateLabel: cssHash+"candidateLabel", candidateId: cssHash+"candidateId",
+			section: "vmo-of-section", title: "vmo-of-title", intro: "vmo-of-intro",
+			notice: "vmo-of-notice", savedNotice: "vmo-of-savedNotice",
+			rows: "vmo-of-rows", rowCard: "vmo-of-rowCard", rowHead: "vmo-of-rowHead",
+			rowIdentity: "vmo-of-rowIdentity", rowName: "vmo-of-rowName", rowTag: "vmo-of-rowTag",
+			credentialDot: "vmo-of-credentialDot", credentialDotConfigured: "vmo-of-credentialDotConfigured",
+			credentialDotMissing: "vmo-of-credentialDotMissing", rowActions: "vmo-of-rowActions",
+			primaryButton: "vmo-of-primaryButton", secondaryButton: "vmo-of-secondaryButton",
+			dangerButton: "vmo-of-dangerButton", editor: "vmo-of-editor", editorHeader: "vmo-of-editorHeader",
+			editorTitle: "vmo-of-editorTitle", editorRoute: "vmo-of-editorRoute",
+			field: "vmo-of-field", fieldLabel: "vmo-of-fieldLabel", linkButton: "vmo-of-linkButton",
+			advancedHint: "vmo-of-advancedHint", editorActions: "vmo-of-editorActions",
+			addBlock: "vmo-of-addBlock", addActions: "vmo-of-addActions", addButton: "vmo-of-addButton",
+			addCard: "vmo-of-addCard", customized: "vmo-of-customized", customizedSummary: "vmo-of-customizedSummary",
+			customizedBody: "vmo-of-customizedBody", modelCatalog: "vmo-of-modelCatalog",
+			modelCatalogHeading: "vmo-of-modelCatalogHeading", modelCatalogTitle: "vmo-of-modelCatalogTitle",
+			modelCatalogMeta: "vmo-of-modelCatalogMeta", modelList: "vmo-of-modelList",
+			modelListHead: "vmo-of-modelListHead", modelEntry: "vmo-of-modelEntry", modelRow: "vmo-of-modelRow",
+			iconButton: "vmo-of-iconButton", iconButtonDanger: "vmo-of-iconButtonDanger",
+			modelAdvanced: "vmo-of-modelAdvanced", modelField: "vmo-of-modelField", modelFieldLabel: "vmo-of-modelFieldLabel",
+			modelEmpty: "vmo-of-modelEmpty", addModelButton: "vmo-of-addModelButton",
+			input: "vmo-of-input", selectInput: "vmo-of-selectInput", error: "vmo-of-error",
+			fetchDialog: "vmo-of-fetchDialog", candidateList: "vmo-of-candidateList",
+			candidate: "vmo-of-candidate", candidateLabel: "vmo-of-candidateLabel", candidateId: "vmo-of-candidateId",
 		};
 // 获取可用模型：走插件后端代理 /vision-opencode/discover-models。
 			// 后端在凭据服务有完整访问权限——编辑已有提供方时 keyDraft 为空，
@@ -1484,7 +1544,7 @@ window.__ModuleLoader__.load({
 				var selProvider = isCustomMode ? "" : (modal.data.provider||"");
 				var isBuiltinProvider = false;
 				for(var _pi4=0; _pi4<providers.length; _pi4++){ if(providers[_pi4] && providers[_pi4].provider===selProvider && providers[_pi4].source==="builtin"){ isBuiltinProvider = true; break; } }
-				// 官方卡片式表单（复用 zGbnIq_* 样式）
+				// 官方卡片式表单（vmo-of-* 内置复刻样式）
 				var editorChildren = [];
 				// 卡片标题（模态标题）：添加提供方 / 编辑 Vision 模型 / 自定义提供方
 				editorChildren.unshift(createElement("div",{className:C.editorHeader},
