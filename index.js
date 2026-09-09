@@ -20,7 +20,7 @@ import { basename, extname } from 'node:path';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { BlockAssembler, createUserMessage, freezeMessage } from '@deepseek-ai/dsh-llm';
-import { settingsNamespace } from '@deepseek-ai/dsh-settings';
+import * as dshSettings from '@deepseek-ai/dsh-settings';
 import {
   PLUGIN_IMAGE_INPUT,
   countImages,
@@ -62,8 +62,11 @@ const IMAGE_EXTENSIONS = {
  * 由用户从自己供应商中声明了图片输入的模型里选择。
  */
 
-/** 本插件持有的 settings namespace。 */
-const NS = settingsNamespace('vision-opencode');
+/** 本插件持有的 settings namespace。新版 dsh-settings 不再导出 settingsNamespace，
+ *  register 本身接受字符串命名空间；旧版该函数即「校验后原样返回」，两分支结果一致。 */
+const NS = typeof dshSettings.settingsNamespace === 'function'
+  ? dshSettings.settingsNamespace('vision-opencode')
+  : 'vision-opencode';
 
 /** 单条 Vision 模型（插件自管，不依赖宿主 provider 目录）。 */
 const VisionModelEntry = z.object({
